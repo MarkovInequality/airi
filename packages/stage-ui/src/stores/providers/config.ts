@@ -230,6 +230,24 @@ export const useProviderConfigStore = defineStore('provider-config', () => {
   }
 
   /**
+   * Updates the selected voice in the leader-owned provider snapshot.
+   *
+   * Speech synthesis and the provider settings page read the voice from the
+   * provider configuration, so an AIRI Card selection reaches both only
+   * through here.
+   */
+  async function setProviderVoice(providerId: string, voice: string) {
+    const provider = providers.value[providerId]
+    if (!provider)
+      return
+
+    providers.value[providerId] = {
+      ...provider,
+      config: { ...provider.config, voice },
+    }
+  }
+
+  /**
    * Seeds a discovered default without replacing a model selected by the user.
    */
   async function setProviderModelIfUnset(providerId: string, model: string) {
@@ -348,6 +366,7 @@ export const useProviderConfigStore = defineStore('provider-config', () => {
     setProviderStatus,
     setProviderModel,
     setProviderModelIfUnset,
+    setProviderVoice,
     fetchProviders,
     addProvider,
     removeProvider,
@@ -364,6 +383,7 @@ export const useProviderConfigStore = defineStore('provider-config', () => {
       'setProviderStatus',
       'setProviderModel',
       'setProviderModelIfUnset',
+      'setProviderVoice',
       'addProvider',
       'removeProvider',
       'updateProviderConfig',

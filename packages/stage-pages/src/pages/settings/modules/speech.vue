@@ -291,7 +291,26 @@ async function selectSpeechVoice(voiceId: string | undefined) {
 }
 
 function selectSpeechSource(sourceId: string) {
+  const previousProvider = activeSpeechProvider.value
   activeSpeechProvider.value = sourceId
+
+  // Models and voices belong to a provider, so picking a different one drops
+  // the previous selection. The reset lives here rather than in the provider
+  // watcher because card activation also writes this ref, with a model and
+  // voice of its own that must survive. The two official routes share one
+  // catalog, so switching between them keeps the selection.
+  const isMergedOfficialSwitch = (
+    previousProvider === OFFICIAL_SPEECH_PROVIDER_ID
+    || previousProvider === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
+  ) && (
+    sourceId === OFFICIAL_SPEECH_PROVIDER_ID
+    || sourceId === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
+  )
+  if (previousProvider !== sourceId && !isMergedOfficialSwitch) {
+    activeSpeechModel.value = ''
+    activeSpeechVoiceId.value = ''
+    activeSpeechVoice.value = undefined
+  }
 }
 
 function selectSpeechModel(modelOptionId: string) {
@@ -303,7 +322,7 @@ function selectSpeechModel(modelOptionId: string) {
     : OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
   const nextModel = streamingModelId ?? modelOptionId
 
-  if (activeSpeechProvider.value !== nextProvider) {
+  if (activeSpeechProvider.value !== nextProvider || activeSpeechModel.value !== nextModel) {
     activeSpeechProvider.value = nextProvider
     activeSpeechVoiceId.value = ''
     activeSpeechVoice.value = undefined
@@ -337,25 +356,17 @@ function syncOpenAICompatibleSettings() {
     return
 
   const providerConfig = providerStore.getProviderConfig(activeSpeechProvider.value)
-  // Sync model from provider config (override any existing value from previous provider)
-  if (providerConfig?.model) {
-    activeSpeechModel.value = providerConfig.model as string
-  }
-  else {
-    // If no model in provider config, use default
-    activeSpeechModel.value = 'tts-1'
-  }
-  // Sync voice from provider config (override any existing value from previous provider)
-  // Use updateCustomVoiceName to ensure proper reactivity
-  if (providerConfig?.voice) {
-    activeSpeechVoiceId.value = providerConfig.voice as string
-    updateCustomVoiceName(providerConfig.voice as string)
-  }
-  else {
-    // If no voice in provider config, use default
-    activeSpeechVoiceId.value = 'alloy'
-    updateCustomVoiceName('alloy')
-  }
+
+  // The provider config seeds an empty selection, it does not replace one. The
+  // active card owns the runtime selection, and this runs on mount as well as
+  // after a provider switch, which has already cleared both fields.
+  if (!activeSpeechModel.value)
+    activeSpeechModel.value = (providerConfig?.model as string) || 'tts-1'
+
+  // updateCustomVoiceName also publishes the voice object this provider has no
+  // catalog entry for.
+  if (!activeSpeechVoiceId.value)
+    updateCustomVoiceName((providerConfig?.voice as string) || 'alloy')
 }
 
 onMounted(async () => {
@@ -366,26 +377,12 @@ onMounted(async () => {
   trackOfficialTtsExposure()
 })
 
-watch(activeSpeechProvider, async (newProvider, oldProvider) => {
+watch(activeSpeechProvider, async (newProvider) => {
   await providersStore.loadModelsForConfiguredProviders()
 
-  // Reset model and voice when switching providers (but not on initial load)
-  const isMergedOfficialSwitch = (
-    oldProvider === OFFICIAL_SPEECH_PROVIDER_ID
-    || oldProvider === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
-  ) && (
-    newProvider === OFFICIAL_SPEECH_PROVIDER_ID
-    || newProvider === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
-  )
-  if (oldProvider !== undefined && oldProvider !== newProvider && !isMergedOfficialSwitch) {
-    activeSpeechModel.value = ''
-    activeSpeechVoiceId.value = ''
-    activeSpeechVoice.value = undefined
-  }
-
-  // Re-seed the streaming default model after the reset above so its voices
-  // load model-scoped (the server only returns recommended voices for an
-  // explicit ?model=). No-op for other providers / when a model is selected.
+  // Re-seed the streaming default model so its voices load model-scoped (the
+  // server only returns recommended voices for an explicit ?model=). No-op for
+  // other providers / when a model is selected.
   speechStore.ensureActiveSpeechModel()
   await speechStore.loadVoicesForProvider(newProvider, activeSpeechModel.value || undefined)
   trackOfficialTtsExposure(newProvider, currentTtsModelId())
@@ -396,9 +393,6 @@ watch(activeSpeechProvider, async (newProvider, oldProvider) => {
 watch(activeSpeechModel, async (model) => {
   if (!activeSpeechProvider.value)
     return
-
-  activeSpeechVoiceId.value = ''
-  activeSpeechVoice.value = undefined
 
   await speechStore.loadVoicesForProvider(activeSpeechProvider.value, model || undefined)
   trackOfficialTtsExposure(activeSpeechProvider.value, currentTtsModelId())

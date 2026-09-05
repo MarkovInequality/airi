@@ -3,6 +3,7 @@ import type { AiriCard } from './airi-card'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useProviderConfigStore } from '../providers/config'
 import { useSettingsStageModel } from '../settings/stage-model'
 import { useAiriCardStore } from './airi-card'
 import { useConsciousnessStore } from './consciousness'
@@ -27,6 +28,35 @@ vi.mock('localforage', () => ({
     setItem: vi.fn(async <T>(_: string, value: T) => value),
   },
 }))
+
+// NOTICE:
+// The stage model store reverts a selection whose display model cannot be
+// resolved, and the mocked localforage driver resolves nothing. Without a
+// display model source, assertions on the applied selection depend on whether
+// that asynchronous revert has landed yet.
+// Removal condition: the display model store gains a test-friendly source.
+vi.mock('../display-models', async () => {
+  const actual = await vi.importActual<typeof import('../display-models')>('../display-models')
+  const { defineStore } = await import('pinia')
+
+  return {
+    ...actual,
+    useDisplayModelsStore: defineStore('display-models', {
+      actions: {
+        async getDisplayModel(id: string) {
+          return {
+            id,
+            format: actual.DisplayModelFormat.Live2dZip,
+            type: 'url' as const,
+            url: `https://example.com/${id}.zip`,
+            name: id,
+            importedAt: 0,
+          }
+        },
+      },
+    }),
+  }
+})
 
 vi.mock('./artistry', async () => {
   const { defineStore } = await import('pinia')
@@ -302,6 +332,53 @@ describe('airi-card store', () => {
       speech: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria', pitch: 12, ssml: true },
     })
     expect(stageModelStore.stageModelSelected).toBe('display-model-iru-v2')
+  })
+
+  // ROOT CAUSE:
+  //
+  // Activating a card applied its speech selection to the speech module only.
+  // Synthesis reads the model and voice from the provider configuration for
+  // OpenAI-compatible endpoints, and the provider settings page renders that
+  // same configuration, so the card's voice reached neither. The provider kept
+  // speaking with the voice configured before the card was applied.
+  //
+  // We fixed this by writing the card's speech selection into the provider
+  // configuration as part of applying the card.
+  it('applies the card speech selection to the provider configuration', async () => {
+    const providerConfigStore = useProviderConfigStore()
+    providerConfigStore.providers['openai-compatible-audio-speech'] = {
+      id: 'openai-compatible-audio-speech',
+      definitionId: 'openai-compatible-audio-speech',
+      config: { model: 'tts-1', voice: 'alloy' },
+      status: 'configured',
+      configuredBy: 'user',
+    }
+
+    const cardStore = useAiriCardStore()
+    await cardStore.initialize()
+
+    const cardId = await cardStore.addCard({
+      name: 'Local voice card',
+      version: '1.0.0',
+      description: 'Card selecting a self-hosted speech endpoint.',
+      extensions: {
+        airi: {
+          modules: {
+            consciousness: { provider: 'mock-consciousness-provider', model: 'mock-consciousness-model' },
+            vision: { provider: 'mock-vision-provider', model: 'mock-vision-model' },
+            speech: { provider: 'openai-compatible-audio-speech', model: 'kokoro', voice_id: 'af_bella' },
+          },
+          agents: {},
+        },
+      },
+    }, 'scratch')
+
+    await cardStore.activateCard(cardId)
+
+    expect(providerConfigStore.getProviderConfig('openai-compatible-audio-speech')).toMatchObject({
+      model: 'kokoro',
+      voice: 'af_bella',
+    })
   })
 
   it('persists the stage view the card loads its body model with', async () => {

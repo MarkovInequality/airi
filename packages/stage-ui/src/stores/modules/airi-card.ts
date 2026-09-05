@@ -12,6 +12,7 @@ import { useI18n } from 'vue-i18n'
 import { DEFAULT_ARTISTRY_WIDGET_SPAWNING_PROMPT } from '../../constants/prompts/character-defaults'
 import { captureAnalyticsEvent } from '../../libs/product-signals'
 import { live2dStageViewFields, mergeCardStageViewIntoModules, resolveCardStageView, vrmStageViewFields } from '../../services/card-stage-view'
+import { useProviderConfigStore } from '../providers/config'
 import { useSettingsStageModel } from '../settings/stage-model'
 import { useArtistryStore } from './artistry'
 import { useConsciousnessStore } from './consciousness'
@@ -169,6 +170,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     return {
       artistry: useArtistryStore(),
       consciousness: useConsciousnessStore(),
+      providerConfig: useProviderConfigStore(),
       speech: useSpeechStore(),
       stageModel: useSettingsStageModel(),
       vision: useVisionStore(),
@@ -201,7 +203,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     // before consumers observe a dangling runtime profile after deletion.
     if (activeCardId.value === id) {
       activeCardId.value = 'default'
-      applyActiveCardSettings()
+      await applyActiveCardSettings()
     }
 
     captureAnalyticsEvent('character_deleted', { character_id: id })
@@ -221,7 +223,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     const card = newAiriCard(updatedCard)
     cards.value.set(id, card)
     if (id === activeCardId.value)
-      applyActiveCardSettings(card)
+      await applyActiveCardSettings(card)
 
     return true
   }
@@ -257,7 +259,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
   async function updateActiveCardDisplayModel(displayModelId: string | undefined) {
     const updated = updateActiveCardModules(() => ({ displayModelId }))
     if (updated)
-      applyActiveCardSettings()
+      await applyActiveCardSettings()
     return updated
   }
 
@@ -270,7 +272,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
   async function updateActiveCardStageView(view: CardStageView | undefined) {
     const updated = updateActiveCardModules(({ modules }) => mergeCardStageViewIntoModules(modules, view))
     if (updated)
-      applyActiveCardSettings()
+      await applyActiveCardSettings()
     return updated
   }
 
@@ -287,14 +289,14 @@ export const useAiriCardStore = defineStore('airi-card', () => {
   async function updateActiveCardConsciousness(consciousness: AiriExtension['modules']['consciousness']) {
     const updated = updateActiveCardModules(() => ({ consciousness }))
     if (updated)
-      applyActiveCardSettings()
+      await applyActiveCardSettings()
     return updated
   }
 
   async function updateActiveCardVision(vision: AiriExtension['modules']['vision']) {
     const updated = updateActiveCardModules(() => ({ vision }))
     if (updated)
-      applyActiveCardSettings()
+      await applyActiveCardSettings()
     return updated
   }
 
@@ -306,7 +308,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       },
     }))
     if (updated)
-      applyActiveCardSettings()
+      await applyActiveCardSettings()
     return updated
   }
 
@@ -525,7 +527,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     if (!cards.value.has(activeCardId.value))
       activeCardId.value = 'default'
 
-    applyActiveCardSettings()
+    await applyActiveCardSettings()
   }
 
   /**
@@ -537,14 +539,15 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       return false
 
     activeCardId.value = id
-    applyActiveCardSettings()
+    await applyActiveCardSettings()
     return true
   }
 
-  function applyActiveCardSettings(newCard = activeCard.value) {
+  async function applyActiveCardSettings(newCard = activeCard.value) {
     const {
       artistry,
       consciousness,
+      providerConfig,
       speech,
       stageModel,
       vision,
@@ -607,6 +610,17 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       if (extension.modules.artistry.options)
         artistry.providerOptions = extension.modules.artistry.options
     }
+
+    // Speech synthesis reads the model and voice from the provider's own
+    // configuration for OpenAI-compatible endpoints, and the provider settings
+    // page renders that configuration for every provider. A card selection
+    // that stops at the speech module reaches neither. This runs last so the
+    // module assignments above stay in one synchronous pass.
+    const speechProviderId = speechSettings?.provider || speech.activeSpeechProvider
+    if (speechProviderId && speechSettings?.model)
+      await providerConfig.setProviderModel(speechProviderId, speechSettings.model)
+    if (speechProviderId && speechSettings?.voice_id)
+      await providerConfig.setProviderVoice(speechProviderId, speechSettings.voice_id)
   }
 
   function resetState() {
