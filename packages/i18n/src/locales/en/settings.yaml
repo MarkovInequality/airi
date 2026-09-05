@@ -466,6 +466,17 @@ pages:
       provider: Speech / Provider
       model: Speech / Model
       voice: Speech / Voice
+      voice_loading: Loading voices...
+      voice_custom_placeholder: Enter a voice name (e.g. 'alloy', 'echo')
+      voice_custom_description: >-
+        This provider publishes no voice list. Enter the voice name to use for
+        this character.
+      pitch: Speech / Pitch
+      pitch_description: Tune the pitch of this character's voice.
+      ssml: Speech / Enable SSML
+      ssml_description: >-
+        Use Speech Synthesis Markup Language for finer control over this
+        character's speech.
     systemprompt: System Prompt
     title: AIRI Card
     try_different_search: Try a different search term

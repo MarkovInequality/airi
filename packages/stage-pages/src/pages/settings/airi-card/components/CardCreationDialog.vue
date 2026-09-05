@@ -14,7 +14,7 @@ import { useSpeechStore } from '@proj-airi/stage-ui/stores/modules/speech'
 import { useVisionStore } from '@proj-airi/stage-ui/stores/modules/vision'
 import { useProviderStore } from '@proj-airi/stage-ui/stores/providers/provider'
 import { useSettingsStageModel } from '@proj-airi/stage-ui/stores/settings/stage-model'
-import { Button, FieldInput, FieldValues } from '@proj-airi/ui'
+import { Button, FieldCheckbox, FieldInput, FieldRange, FieldValues } from '@proj-airi/ui'
 import { ComboboxSelect } from '@proj-airi/ui/components/form'
 import { storeToRefs } from 'pinia'
 import {
@@ -70,7 +70,14 @@ const artistryStore = useArtistryStore()
 
 const { activeProvider: consciousnessProvider, activeModel: defaultConsciousnessModel } = storeToRefs(consciousnessStore)
 const { activeProvider: visionProvider, activeModel: defaultVisionModel } = storeToRefs(visionStore)
-const { activeSpeechProvider: speechProvider, activeSpeechModel: defaultSpeechModel, activeSpeechVoiceId: defaultSpeechVoiceId } = storeToRefs(speechStore)
+const {
+  activeSpeechProvider: speechProvider,
+  activeSpeechModel: defaultSpeechModel,
+  activeSpeechVoiceId: defaultSpeechVoiceId,
+  pitch: defaultSpeechPitch,
+  ssmlEnabled: defaultSpeechSsmlEnabled,
+  isLoadingSpeechProviderVoices,
+} = storeToRefs(speechStore)
 const { displayModels } = storeToRefs(displayModelsStore)
 const { stageModelSelected: defaultDisplayModelId } = storeToRefs(stageModelStore)
 const { activeProvider: defaultArtistryProvider } = storeToRefs(artistryStore)
@@ -87,6 +94,10 @@ const selectedVisionModel = ref<string>('')
 const selectedSpeechProvider = ref<string>('')
 const selectedSpeechModel = ref<string>('')
 const selectedSpeechVoiceId = ref<string>('')
+// Provider whose voice catalog this dialog has already fetched.
+const speechVoicesLoadedFor = ref<string>('')
+const selectedSpeechPitch = ref<number>(0)
+const selectedSpeechSsmlEnabled = ref<boolean>(false)
 const selectedDisplayModelId = ref<string>('')
 
 // Artistry configuration
@@ -149,9 +160,10 @@ const visionModelOptions = computed(() => {
   }))
 })
 
-// Computed: available speech provider options
+// Credential-free providers (Apple Speech, Kokoro, AIRI voices) hold no stored
+// config record, so the module list is the one that includes them.
 const speechProviderOptions = computed(() => {
-  return providersStore.configuredSpeechProvidersMetadata.map(provider => ({
+  return providersStore.moduleSpeechProvidersMetadata.map(provider => ({
     value: provider.id,
     label: provider.localizedName || provider.name,
   }))
@@ -169,17 +181,43 @@ const speechModelOptions = computed(() => {
   }))
 })
 
+const resolvedSpeechProvider = computed(() => selectedSpeechProvider.value || speechProvider.value)
+
 // Computed: available speech voices options
 const speechVoiceOptions = computed(() => {
-  const provider = selectedSpeechProvider.value || speechProvider.value
+  const provider = resolvedSpeechProvider.value
   if (!provider)
     return []
-  const voices = speechStore.getVoicesForProvider(provider)
-  return voices.map(voice => ({
-    value: voice.id,
-    label: voice.name || voice.id,
-  }))
+
+  const model = selectedSpeechModel.value
+  return speechStore.getVoicesForProvider(provider)
+    .filter(voice => !model || !voice.compatibleModels || voice.compatibleModels.includes(model))
+    .map(voice => ({
+      value: voice.id,
+      label: voice.name || voice.id,
+    }))
 })
+
+// `speech-noop` means the character stays silent.
+const speechEnabled = computed(() => !!resolvedSpeechProvider.value && resolvedSpeechProvider.value !== 'speech-noop')
+
+// OpenAI-compatible endpoints publish no voice catalog, and self-hosted ones
+// can return an empty list. Both need a free-text voice id.
+const speechVoiceNeedsCustomInput = computed(() => {
+  if (!speechEnabled.value)
+    return false
+  if (resolvedSpeechProvider.value === 'openai-compatible-audio-speech')
+    return true
+
+  return speechVoicesLoadedFor.value === resolvedSpeechProvider.value
+    && !isLoadingSpeechProviderVoices.value
+    && speechVoiceOptions.value.length === 0
+})
+
+async function loadSpeechVoices(provider: string, model?: string) {
+  await speechStore.loadVoicesForProvider(provider, model)
+  speechVoicesLoadedFor.value = provider
+}
 
 // Computed: available artistry provider options
 const artistryProviderOptions = computed(() => {
@@ -208,7 +246,7 @@ async function loadSelectedModuleOptions() {
     loads.push(visionStore.loadModelsForProvider(selectedVisionProvider.value))
 
   if (selectedSpeechProvider.value) {
-    loads.push(speechStore.loadVoicesForProvider(selectedSpeechProvider.value, selectedSpeechModel.value || undefined))
+    loads.push(loadSpeechVoices(selectedSpeechProvider.value, selectedSpeechModel.value || undefined))
     if (providersStore.supportsModelListing(selectedSpeechProvider.value))
       loads.push(providersStore.fetchModelsForProvider(selectedSpeechProvider.value))
   }
@@ -242,10 +280,10 @@ watch(selectedVisionProvider, async (newProvider, oldProvider) => {
 // Watch speech provider changes and reload models/voices
 watch(selectedSpeechProvider, async (newProvider, oldProvider) => {
   if (props.modelValue && !isInitializingModuleSelections && oldProvider !== undefined && newProvider !== oldProvider && newProvider) {
-    await speechStore.loadVoicesForProvider(newProvider)
     if (providersStore.supportsModelListing(newProvider)) {
       await providersStore.fetchModelsForProvider(newProvider)
     }
+    await loadSpeechVoices(newProvider)
     // Reset model and voice selection
     selectedSpeechModel.value = ''
     selectedSpeechVoiceId.value = ''
@@ -257,11 +295,13 @@ watch(selectedSpeechModel, async (newModel, oldModel) => {
   // Only reset if model actually changed and we're not initializing
   const provider = selectedSpeechProvider.value || speechProvider.value
   if (props.modelValue && !isInitializingModuleSelections && oldModel !== undefined && newModel !== oldModel && provider) {
-    // Reload voices for the current provider
-    await speechStore.loadVoicesForProvider(provider)
+    // Streaming and OpenAI audio catalogs are model-scoped.
+    await loadSpeechVoices(provider, newModel || undefined)
 
-    // Reset voice selection to default
-    selectedSpeechVoiceId.value = defaultSpeechVoiceId.value || ''
+    const fallbackVoiceId = defaultSpeechVoiceId.value || ''
+    selectedSpeechVoiceId.value = speechVoiceOptions.value.some(option => option.value === fallbackVoiceId)
+      ? fallbackVoiceId
+      : ''
   }
 })
 
@@ -345,6 +385,8 @@ async function saveCard(card: Card, activate: boolean): Promise<boolean> {
       provider: selectedSpeechProvider.value || speechProvider.value,
       model: selectedSpeechModel.value || defaultSpeechModel.value,
       voice_id: selectedSpeechVoiceId.value || defaultSpeechVoiceId.value,
+      pitch: selectedSpeechPitch.value,
+      ssml: selectedSpeechSsmlEnabled.value,
     },
     displayModelId: selectedDisplayModelId.value || defaultDisplayModelId.value,
     artistry: {
@@ -412,6 +454,8 @@ function initializeCard(): Card {
   selectedSpeechProvider.value = airiExt?.modules?.speech?.provider || speechProvider.value
   selectedSpeechModel.value = airiExt?.modules?.speech?.model || defaultSpeechModel.value
   selectedSpeechVoiceId.value = airiExt?.modules?.speech?.voice_id || defaultSpeechVoiceId.value
+  selectedSpeechPitch.value = airiExt?.modules?.speech?.pitch ?? defaultSpeechPitch.value
+  selectedSpeechSsmlEnabled.value = airiExt?.modules?.speech?.ssml ?? defaultSpeechSsmlEnabled.value
   selectedDisplayModelId.value = airiExt?.modules?.displayModelId || defaultDisplayModelId.value
 
   // NOTICE: keep legacy `extensions.airi.artistry` fallback so existing cards continue to load.
@@ -449,6 +493,7 @@ watch(() => [props.modelValue, props.cardId], async () => {
   showError.value = false
   errorMessage.value = ''
   hasLoadedModuleOptions = false
+  speechVoicesLoadedFor.value = ''
   isInitializingModuleSelections = true
   card.value = initializeCard()
   await nextTick()
@@ -661,11 +706,38 @@ function getDefaultPlaceholder(defaultValue: string | undefined): string {
                   {{ t('settings.pages.card.speech.voice') }}
                 </label>
                 <ComboboxSelect
+                  v-if="!speechVoiceNeedsCustomInput"
                   v-model="selectedSpeechVoiceId"
                   :options="speechVoiceOptions"
-                  :placeholder="getDefaultPlaceholder(defaultSpeechVoiceId)"
-                  :disabled="!selectedSpeechProvider && !speechProvider"
+                  :placeholder="isLoadingSpeechProviderVoices ? t('settings.pages.card.speech.voice_loading') : getDefaultPlaceholder(defaultSpeechVoiceId)"
+                  :disabled="!speechEnabled || isLoadingSpeechProviderVoices"
                   class="w-full"
+                />
+                <template v-else>
+                  <FieldInput
+                    v-model="selectedSpeechVoiceId"
+                    type="text"
+                    :placeholder="t('settings.pages.card.speech.voice_custom_placeholder')"
+                  />
+                  <span :class="['text-xs', 'text-neutral-400', 'dark:text-neutral-500']">
+                    {{ t('settings.pages.card.speech.voice_custom_description') }}
+                  </span>
+                </template>
+              </div>
+
+              <!-- Voice tuning -->
+              <div v-if="speechEnabled" :class="['flex', 'flex-col', 'gap-4', 'sm:col-span-2']">
+                <FieldRange
+                  v-model="selectedSpeechPitch"
+                  :label="t('settings.pages.card.speech.pitch')"
+                  :description="t('settings.pages.card.speech.pitch_description')"
+                  :min="-100" :max="100" :step="1"
+                  :format-value="value => `${value}%`"
+                />
+                <FieldCheckbox
+                  v-model="selectedSpeechSsmlEnabled"
+                  :label="t('settings.pages.card.speech.ssml')"
+                  :description="t('settings.pages.card.speech.ssml_description')"
                 />
               </div>
 

@@ -22,7 +22,7 @@ export type AiriCardDraftValidationError = 'name' | 'version' | 'invalid_artistr
 interface AiriCardEditorModules {
   consciousness: AiriExtension['modules']['consciousness']
   vision: AiriExtension['modules']['vision']
-  speech: Pick<AiriExtension['modules']['speech'], 'provider' | 'model' | 'voice_id'>
+  speech: Pick<AiriExtension['modules']['speech'], 'provider' | 'model' | 'voice_id' | 'pitch' | 'ssml'>
   displayModelId?: string
   artistry: Pick<
     NonNullable<AiriExtension['modules']['artistry']>,

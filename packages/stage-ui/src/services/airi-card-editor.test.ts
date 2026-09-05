@@ -170,6 +170,50 @@ describe('airi card editor validation', () => {
     })
     expect(extension.agents).toEqual(existing.agents)
   })
+
+  it('applies the voice tuning owned by the editor form', () => {
+    const result = applyAiriCardEditorModules({
+      ...createCard(),
+      extensions: {
+        airi: {
+          modules: {
+            consciousness: { provider: 'old-chat', model: 'old-chat-model' },
+            vision: { provider: 'old-vision', model: 'old-vision-model' },
+            speech: {
+              provider: 'old-speech',
+              model: 'old-speech-model',
+              voice_id: 'old-voice',
+              pitch: 40,
+              ssml: true,
+              language: 'ja',
+            },
+          },
+          agents: {},
+        } satisfies AiriExtension,
+      },
+    }, {
+      consciousness: { provider: 'new-chat', model: 'new-chat-model' },
+      vision: { provider: 'new-vision', model: 'new-vision-model' },
+      speech: {
+        provider: 'new-speech',
+        model: 'new-speech-model',
+        voice_id: 'new-voice',
+        pitch: 0,
+        ssml: false,
+      },
+      artistry: {},
+    })
+
+    // `language` stays because the form does not own it.
+    expect(result.extensions.airi.modules.speech).toEqual({
+      provider: 'new-speech',
+      model: 'new-speech-model',
+      voice_id: 'new-voice',
+      pitch: 0,
+      ssml: false,
+      language: 'ja',
+    })
+  })
 })
 
 function createCard(): Card {

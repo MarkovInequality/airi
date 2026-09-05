@@ -156,7 +156,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     return updated
   }
 
-  async function updateActiveCardSpeech(speech: Pick<AiriExtension['modules']['speech'], 'provider' | 'model' | 'voice_id'>) {
+  async function updateActiveCardSpeech(speech: Pick<AiriExtension['modules']['speech'], 'provider' | 'model' | 'voice_id' | 'pitch' | 'ssml'>) {
     const updated = updateActiveCardModules(({ modules }) => ({
       speech: {
         ...modules.speech,
@@ -192,6 +192,8 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       && modules?.speech?.provider === speech.activeSpeechProvider
       && modules.speech.model === speech.activeSpeechModel
       && modules.speech.voice_id === speech.activeSpeechVoiceId
+      && modules.speech.pitch === speech.pitch
+      && modules.speech.ssml === speech.ssmlEnabled
       && modules?.vision?.provider === vision.activeProvider
       && modules.vision.model === vision.activeModel
 
@@ -208,6 +210,8 @@ export const useAiriCardStore = defineStore('airi-card', () => {
         provider: speech.activeSpeechProvider,
         model: speech.activeSpeechModel,
         voice_id: speech.activeSpeechVoiceId,
+        pitch: speech.pitch,
+        ssml: speech.ssmlEnabled,
       },
       vision: {
         provider: vision.activeProvider,
@@ -244,6 +248,8 @@ export const useAiriCardStore = defineStore('airi-card', () => {
         provider: speech.activeSpeechProvider,
         model: speech.activeSpeechModel,
         voice_id: speech.activeSpeechVoiceId,
+        pitch: speech.pitch,
+        ssml: speech.ssmlEnabled,
       },
       displayModelId: stageModel.stageModelSelected,
       artistry: {
@@ -283,9 +289,9 @@ export const useAiriCardStore = defineStore('airi-card', () => {
           provider: existingExtension.modules?.speech?.provider ?? defaultModules.speech.provider,
           model: existingExtension.modules?.speech?.model ?? defaultModules.speech.model,
           voice_id: existingExtension.modules?.speech?.voice_id ?? defaultModules.speech.voice_id,
-          pitch: existingExtension.modules?.speech?.pitch,
+          pitch: existingExtension.modules?.speech?.pitch ?? defaultModules.speech.pitch,
           rate: existingExtension.modules?.speech?.rate,
-          ssml: existingExtension.modules?.speech?.ssml,
+          ssml: existingExtension.modules?.speech?.ssml ?? defaultModules.speech.ssml,
           language: existingExtension.modules?.speech?.language,
         },
         vrm: existingExtension.modules?.vrm,
@@ -431,6 +437,11 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       speech.activeSpeechModel = speechSettings.model
     if (speechSettings?.voice_id)
       speech.activeSpeechVoiceId = speechSettings.voice_id
+    // 0 and false are real selections, so these apply on presence.
+    if (speechSettings?.pitch != null)
+      speech.pitch = speechSettings.pitch
+    if (speechSettings?.ssml != null)
+      speech.ssmlEnabled = speechSettings.ssml
 
     // Apply body model if the card has a display model configured.
     // NOTICE: must set via store property directly (not storeToRefs .value) so Pinia's
@@ -495,6 +506,8 @@ export const useAiriCardStore = defineStore('airi-card', () => {
           provider: speech.activeSpeechProvider,
           model: speech.activeSpeechModel,
           voice_id: speech.activeSpeechVoiceId,
+          pitch: speech.pitch,
+          ssml: speech.ssmlEnabled,
         },
         displayModelId: stageModel.stageModelSelected,
         activeBackgroundId: activeCard.value?.extensions?.airi?.modules?.activeBackgroundId,

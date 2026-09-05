@@ -72,6 +72,8 @@ vi.mock('./speech', async () => {
         activeSpeechProvider: 'mock-speech-provider',
         activeSpeechModel: 'mock-speech-model',
         activeSpeechVoiceId: 'mock-speech-voice',
+        pitch: 0,
+        ssmlEnabled: false,
       }),
     }),
   }
@@ -292,12 +294,12 @@ describe('airi-card store', () => {
     expect(await cardStore.updateActiveCardDisplayModel('display-model-iru-v2')).toBe(true)
     expect(await cardStore.updateActiveCardConsciousness({ provider: 'openrouter-ai', model: 'anthropic/claude-sonnet' })).toBe(true)
     expect(await cardStore.updateActiveCardVision({ provider: 'ollama', model: 'llava' })).toBe(true)
-    expect(await cardStore.updateActiveCardSpeech({ provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria' })).toBe(true)
+    expect(await cardStore.updateActiveCardSpeech({ provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria', pitch: 12, ssml: true })).toBe(true)
     expect(cardStore.activeCard?.extensions.airi.modules).toMatchObject({
       displayModelId: 'display-model-iru-v2',
       consciousness: { provider: 'openrouter-ai', model: 'anthropic/claude-sonnet' },
       vision: { provider: 'ollama', model: 'llava' },
-      speech: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria' },
+      speech: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria', pitch: 12, ssml: true },
     })
     expect(stageModelStore.stageModelSelected).toBe('display-model-iru-v2')
   })
@@ -553,5 +555,80 @@ describe('airi-card store', () => {
 
     expect(cardStore.activeCardId).toBe('default')
     expect(cardStore.activeCard?.name).toBe('ReLU')
+  })
+
+  // ROOT CAUSE:
+  //
+  // A card could carry `speech.pitch` and `speech.ssml`, and the card editor
+  // persisted them, but activation only forwarded provider, model and voice id.
+  // A character with its own voice tuning still spoke with the global settings.
+  //
+  // We fixed this by applying the card's voice tuning during activation.
+  it('applies the activated card voice tuning to the speech runtime', async () => {
+    const speechStore = useSpeechStore()
+    const cardStore = useAiriCardStore()
+    await cardStore.initialize()
+
+    const cardId = await cardStore.addCard({
+      name: 'Tuned voice card',
+      version: '1.0.0',
+      description: 'Speaks with its own pitch.',
+      extensions: {
+        airi: {
+          modules: {
+            speech: {
+              provider: 'elevenlabs',
+              model: 'eleven_multilingual_v2',
+              voice_id: 'aria',
+              pitch: 24,
+              ssml: true,
+            },
+          },
+          agents: {},
+        },
+      },
+    } as unknown as AiriCard, 'scratch')
+
+    await cardStore.activateCard(cardId)
+
+    expect(speechStore.activeSpeechProvider).toBe('elevenlabs')
+    expect(speechStore.activeSpeechVoiceId).toBe('aria')
+    expect(speechStore.pitch).toBe(24)
+    expect(speechStore.ssmlEnabled).toBe(true)
+  })
+
+  // Applying these on truthiness would keep the previous card's tuning instead.
+  it('applies a neutral pitch and a disabled SSML flag from the activated card', async () => {
+    const speechStore = useSpeechStore()
+    speechStore.pitch = 40
+    speechStore.ssmlEnabled = true
+
+    const cardStore = useAiriCardStore()
+    await cardStore.initialize()
+
+    const cardId = await cardStore.addCard({
+      name: 'Neutral voice card',
+      version: '1.0.0',
+      description: 'Speaks without tuning.',
+      extensions: {
+        airi: {
+          modules: {
+            speech: {
+              provider: 'elevenlabs',
+              model: 'eleven_multilingual_v2',
+              voice_id: 'aria',
+              pitch: 0,
+              ssml: false,
+            },
+          },
+          agents: {},
+        },
+      },
+    } as unknown as AiriCard, 'scratch')
+
+    await cardStore.activateCard(cardId)
+
+    expect(speechStore.pitch).toBe(0)
+    expect(speechStore.ssmlEnabled).toBe(false)
   })
 })

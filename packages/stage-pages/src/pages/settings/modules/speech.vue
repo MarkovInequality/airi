@@ -404,8 +404,8 @@ watch(activeSpeechModel, async (model) => {
   trackOfficialTtsExposure(activeSpeechProvider.value, currentTtsModelId())
 })
 
-watch([activeSpeechProvider, activeSpeechModel, activeSpeechVoiceId], ([provider, model, voiceId]) => {
-  void airiCardStore.updateActiveCardSpeech({ provider, model, voice_id: voiceId })
+watch([activeSpeechProvider, activeSpeechModel, activeSpeechVoiceId, pitch, ssmlEnabled], ([provider, model, voiceId, voicePitch, voiceSsml]) => {
+  void airiCardStore.updateActiveCardSpeech({ provider, model, voice_id: voiceId, pitch: voicePitch, ssml: voiceSsml })
 })
 
 // Function to generate speech
