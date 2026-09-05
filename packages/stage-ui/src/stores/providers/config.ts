@@ -97,9 +97,67 @@ export const useProviderConfigStore = defineStore('provider-config', () => {
     }) => service.patchConfigRemote(client, payload.providerId, payload.config, payload.status),
   })
 
-  const configs = computed(() => Object.fromEntries(
-    Object.entries(providers.value).map(([providerId, provider]) => [providerId, provider.config]),
-  ))
+  const configs = computed(() => new Proxy({} as Record<string, Record<string, unknown>>, {
+    get: (target, key, receiver) => {
+      if (typeof key !== 'string')
+        return Reflect.get(target, key, receiver)
+
+      return providers.value[key]?.config
+    },
+    set: (target, key, value, receiver) => {
+      if (typeof key !== 'string')
+        return Reflect.set(target, key, value, receiver)
+
+      const config = { ...(value as Record<string, unknown>) }
+      const provider = providers.value[key]
+      if (provider) {
+        provider.config = config
+        return true
+      }
+
+      // A page may write configuration for a provider it has not created yet.
+      // Seed the same record shape `ensureProvider` uses rather than dropping
+      // the write. Provider ids match definition ids apart from the vision
+      // prefix, which the legacy import above resolves the same way.
+      const definitionId = key.startsWith('vision-') ? key.slice('vision-'.length) : key
+      providers.value[key] = {
+        id: key,
+        definitionId,
+        config,
+        status: 'unconfigured',
+        configuredBy: getDefinedProvider(definitionId)?.configuredBy ?? 'user',
+      }
+
+      return true
+    },
+    deleteProperty: (target, key) => {
+      if (typeof key !== 'string')
+        return Reflect.deleteProperty(target, key)
+
+      delete providers.value[key]
+      return true
+    },
+    has: (target, key) => {
+      if (typeof key !== 'string')
+        return Reflect.has(target, key)
+
+      return key in providers.value
+    },
+    // `Object.entries(configs)` and object spread read the key list and then
+    // ask for a descriptor per key. Both traps must agree with `get`, or the
+    // enumeration drops every entry.
+    ownKeys: () => Reflect.ownKeys(providers.value),
+    getOwnPropertyDescriptor: (target, key) => {
+      if (typeof key !== 'string')
+        return Reflect.getOwnPropertyDescriptor(target, key)
+
+      const provider = providers.value[key]
+      if (!provider)
+        return undefined
+
+      return { configurable: true, enumerable: true, value: provider.config, writable: true }
+    },
+  }))
   const listedProviders = computed(() => Object.fromEntries(
     Object.entries(providers.value).filter(([providerId]) => addedProviders.value[providerId]),
   ))

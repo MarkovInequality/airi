@@ -1,7 +1,7 @@
 import type { InferenceServiceProvider } from '../../libs/providers/types'
 
 import { PiniaColada } from '@pinia/colada'
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia, setActivePinia, storeToRefs } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp } from 'vue'
 
@@ -117,5 +117,56 @@ describe('provider config store', () => {
       'configured',
     )
     expect(mocks.service.deleteRemote).toHaveBeenCalledWith(mocks.client, remoteProvider.id)
+  })
+
+  describe('configs write-through', () => {
+    it('routes an entry replacement into the provider snapshot', () => {
+      const store = installStore()
+      store.providers[localProvider.id] = { ...localProvider, config: {} }
+      const { configs } = storeToRefs(store)
+
+      configs.value[localProvider.id] = { apiKey: 'sk-test', baseUrl: 'http://localhost:8080/v1/' }
+
+      expect(store.getProviderConfig(localProvider.id)).toEqual({
+        apiKey: 'sk-test',
+        baseUrl: 'http://localhost:8080/v1/',
+      })
+    })
+
+    it('keeps later field writes reaching the store after a replacement', () => {
+      const store = installStore()
+      store.providers[localProvider.id] = { ...localProvider, config: {} }
+      const { configs } = storeToRefs(store)
+
+      configs.value[localProvider.id] = { apiKey: 'sk-' }
+      configs.value[localProvider.id].apiKey = 'sk-test'
+
+      expect(store.getProviderConfig(localProvider.id)?.apiKey).toBe('sk-test')
+    })
+
+    it('creates the provider record when a page writes config for an unknown provider', () => {
+      const store = installStore()
+      const { configs } = storeToRefs(store)
+
+      configs.value[localProvider.id] = { model: 'tts-1' }
+
+      expect(store.providers[localProvider.id]).toEqual({
+        id: localProvider.id,
+        definitionId: localProvider.id,
+        config: { model: 'tts-1' },
+        status: 'unconfigured',
+        configuredBy: 'user',
+      })
+    })
+
+    it('enumerates the same entries the provider snapshot holds', () => {
+      const store = installStore()
+      store.providers[localProvider.id] = { ...localProvider, config: { apiKey: 'sk-test' } }
+      const { configs } = storeToRefs(store)
+
+      expect(Object.entries(configs.value)).toEqual([[localProvider.id, { apiKey: 'sk-test' }]])
+      expect({ ...configs.value }).toEqual({ [localProvider.id]: { apiKey: 'sk-test' } })
+      expect(localProvider.id in configs.value).toBe(true)
+    })
   })
 })
