@@ -1,8 +1,9 @@
 import type { Card, ccv3 } from '@proj-airi/ccc'
 
-import type { AiriCard, AiriExtension } from '../../types/airiCard'
+import type { AiriCard, AiriExtension, CardStageView } from '../../types/airiCard'
 
 import { useLocalStorageManualReset } from '@proj-airi/stage-shared/composables'
+import { until } from '@vueuse/core'
 import { nanoid } from 'nanoid'
 import { defineStore } from 'pinia'
 import { computed } from 'vue'
@@ -10,13 +11,14 @@ import { useI18n } from 'vue-i18n'
 
 import { DEFAULT_ARTISTRY_WIDGET_SPAWNING_PROMPT } from '../../constants/prompts/character-defaults'
 import { captureAnalyticsEvent } from '../../libs/product-signals'
+import { live2dStageViewFields, mergeCardStageViewIntoModules, resolveCardStageView, vrmStageViewFields } from '../../services/card-stage-view'
 import { useSettingsStageModel } from '../settings/stage-model'
 import { useArtistryStore } from './artistry'
 import { useConsciousnessStore } from './consciousness'
 import { useSpeechStore } from './speech'
 import { useVisionStore } from './vision'
 
-export type { AiriCard, AiriExtension } from '../../types/airiCard'
+export type { AiriCard, AiriExtension, CardStageView } from '../../types/airiCard'
 
 function resolveSystemPrompt(card: AiriCard | undefined): string {
   if (!card)
@@ -33,6 +35,123 @@ function resolveSystemPrompt(card: AiriCard | undefined): string {
   ].filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
 
   return systemPromptParts.join('\n\n')
+}
+
+type StageModelStore = ReturnType<typeof useSettingsStageModel>
+
+/** Gives up waiting for the stage so a model that never loads cannot leave an application pending. */
+const stageViewSettleTimeout = 30_000
+
+/** Only the newest application may write to the view controls, since each one waits on the stage. */
+let stageViewApplySequence = 0
+
+/**
+ * Reads the stage view of the renderer currently on stage.
+ *
+ * Live2D and VRM own separate view control systems and the other renderers
+ * own none, so at most one view is worth saving on a card. The controls are
+ * browser-only modules, loaded lazily here as the stage model store does.
+ */
+async function captureRuntimeStageView(stageModel: StageModelStore): Promise<CardStageView | undefined> {
+  if (typeof window === 'undefined')
+    return undefined
+
+  if (stageModel.stageModelRenderer === 'live2d') {
+    const { useL2dViewControl } = await import('../live2d')
+    const { position, scale } = useL2dViewControl()
+
+    return {
+      live2d: {
+        x: position.value.x,
+        y: position.value.y,
+        scale: scale.value,
+      },
+    }
+  }
+
+  if (stageModel.stageModelRenderer === 'vrm') {
+    const { useThreeViewControl } = await import('@proj-airi/stage-ui-three')
+    const { modelOffset, cameraDistance, cameraFOV } = useThreeViewControl()
+
+    return {
+      vrm: {
+        x: modelOffset.value.x,
+        y: modelOffset.value.y,
+        z: modelOffset.value.z,
+        cameraDistance: cameraDistance.value,
+        cameraFOV: cameraFOV.value,
+      },
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Restores a card's stage view once the stage is ready to keep it.
+ *
+ * Fields are replayed through the renderer's own `set` command, which clamps
+ * them to the range its sliders allow. Omitted fields keep the current runtime
+ * value, so cards saved before stage views existed leave the stage alone.
+ */
+async function applyRuntimeStageView(
+  view: CardStageView | undefined,
+  stageModel: StageModelStore,
+  displayModelId: string | undefined,
+) {
+  if (!view || typeof window === 'undefined')
+    return
+
+  const sequence = ++stageViewApplySequence
+
+  // The renderer showing this body model owns the card's framing.
+  // `stageModelSelectedDisplayModel` publishes last, so waiting on it settles
+  // the renderer too.
+  if (displayModelId && stageModel.stageModelSelectedDisplayModel?.id !== displayModelId) {
+    await until(() => stageModel.stageModelSelectedDisplayModel?.id).toBe(displayModelId, { timeout: stageViewSettleTimeout })
+    if (sequence !== stageViewApplySequence)
+      return
+  }
+
+  if (stageModel.stageModelRenderer === 'live2d' && view.live2d) {
+    const { useL2dViewControl } = await import('../live2d')
+    if (sequence !== stageViewApplySequence)
+      return
+
+    const { set } = useL2dViewControl()
+    for (const field of live2dStageViewFields) {
+      const value = view.live2d[field]
+      if (value != null)
+        set(field, value)
+    }
+
+    return
+  }
+
+  if (stageModel.stageModelRenderer === 'vrm' && view.vrm) {
+    const { useModelStore, useThreeViewControl } = await import('@proj-airi/stage-ui-three')
+    if (sequence !== stageViewApplySequence)
+      return
+
+    // NOTICE:
+    // A view restored before the VRM scene finishes loading is overwritten:
+    // `applySceneBootstrap` refits the offset and camera on `initial-load` and
+    // `model-switch` (packages/stage-ui-three/src/components/ThreeScene.vue).
+    // Removable once the scene keeps a restored view across a load.
+    const modelStore = useModelStore()
+    if (displayModelId && modelStore.lastCommittedModelId !== displayModelId) {
+      await until(() => modelStore.lastCommittedModelId).toBe(displayModelId, { timeout: stageViewSettleTimeout })
+      if (sequence !== stageViewApplySequence)
+        return
+    }
+
+    const { set } = useThreeViewControl()
+    for (const field of vrmStageViewFields) {
+      const value = view.vrm[field]
+      if (value != null)
+        set(field, value)
+    }
+  }
 }
 
 export const useAiriCardStore = defineStore('airi-card', () => {
@@ -140,6 +259,29 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     if (updated)
       applyActiveCardSettings()
     return updated
+  }
+
+  /**
+   * Stores the scale and position the active card's body model loads in at.
+   *
+   * Pass `undefined` to drop the view so the card stops moving the stage on
+   * activation. `captureStageView` produces the value to save.
+   */
+  async function updateActiveCardStageView(view: CardStageView | undefined) {
+    const updated = updateActiveCardModules(({ modules }) => mergeCardStageViewIntoModules(modules, view))
+    if (updated)
+      applyActiveCardSettings()
+    return updated
+  }
+
+  /**
+   * Snapshots the live stage view for a caller that is about to save a card.
+   *
+   * Resolves only the stage model store: creating the inference module stores
+   * would make an editor surface load provider catalogs it never reads.
+   */
+  async function captureStageView() {
+    return captureRuntimeStageView(useSettingsStageModel())
   }
 
   async function updateActiveCardConsciousness(consciousness: AiriExtension['modules']['consciousness']) {
@@ -450,6 +592,11 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       stageModel.stageModelSelected = extension.modules.displayModelId
     }
 
+    // The view can only be restored once the body model resolves, so this
+    // settles after the rest of the card. Renderers watch their view state and
+    // reposition the model whenever it lands.
+    void applyRuntimeStageView(resolveCardStageView(extension.modules), stageModel, extension.modules?.displayModelId)
+
     if (extension.modules?.artistry) {
       if (extension.modules.artistry.provider)
         artistry.activeProvider = extension.modules.artistry.provider
@@ -475,8 +622,10 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     addCard,
     removeCard,
     updateCard,
+    captureStageView,
     updateActiveCardConsciousness,
     updateActiveCardDisplayModel,
+    updateActiveCardStageView,
     persistActiveCardModuleSelections,
     updateActiveCardSpeech,
     updateActiveCardVision,
@@ -526,6 +675,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       'updateActiveCardConsciousness',
       'updateActiveCardDisplayModel',
       'updateActiveCardSpeech',
+      'updateActiveCardStageView',
       'updateActiveCardVision',
       'updateCard',
     ],

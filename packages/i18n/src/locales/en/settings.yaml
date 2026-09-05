@@ -462,6 +462,21 @@ pages:
     search: Search cards...
     sort_by: Sort by
     body-model: Body / Display Model
+    stage_view:
+      label: Body / Stage View
+      description: >-
+        Scale and position this character's body model loads in at. Frame the
+        model on stage first, then capture it here.
+      capture: Capture current view
+      clear: Clear
+      none: >-
+        Not saved. This character loads with whatever view the stage is
+        already using.
+      unsupported: >-
+        The model on stage has no view controls. Only Live2D and VRM models
+        can save a stage view.
+      live2d: 'Live2D — x {x}%, y {y}%, scale {scale}'
+      vrm: 'VRM — x {x}m, y {y}m, z {z}m, distance {distance}m, FOV {fov}°'
     speech:
       provider: Speech / Provider
       model: Speech / Model

@@ -171,6 +171,45 @@ describe('airi card editor validation', () => {
     expect(extension.agents).toEqual(existing.agents)
   })
 
+  it('stores the stage view next to the body model source', () => {
+    const result = applyAiriCardEditorModules({
+      ...createCard(),
+      extensions: {
+        airi: {
+          modules: {
+            consciousness: { provider: 'chat', model: 'chat-model' },
+            vision: { provider: 'vision', model: 'vision-model' },
+            speech: { provider: 'speech', model: 'speech-model', voice_id: 'voice' },
+            live2d: { source: 'file', file: 'models/avatar.model3.json', view: { x: 1, y: 1, scale: 1 } },
+          },
+          agents: {},
+        } satisfies AiriExtension,
+      },
+    }, {
+      consciousness: { provider: 'chat', model: 'chat-model' },
+      vision: { provider: 'vision', model: 'vision-model' },
+      speech: { provider: 'speech', model: 'speech-model', voice_id: 'voice' },
+      stageView: { live2d: { x: -6, y: 2, scale: 1.6 } },
+      artistry: {
+        provider: 'artistry',
+        model: 'artistry-model',
+        promptPrefix: '',
+        widgetInstruction: '',
+        spawnMode: 'bg_widget',
+        options: undefined,
+        autonomousEnabled: false,
+        autonomousThreshold: 70,
+      },
+    })
+
+    expect(result.extensions.airi.modules.live2d).toEqual({
+      source: 'file',
+      file: 'models/avatar.model3.json',
+      view: { x: -6, y: 2, scale: 1.6 },
+    })
+    expect(result.extensions.airi.modules).not.toHaveProperty('stageView')
+  })
+
   it('applies the voice tuning owned by the editor form', () => {
     const result = applyAiriCardEditorModules({
       ...createCard(),

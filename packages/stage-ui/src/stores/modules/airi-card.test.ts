@@ -304,6 +304,27 @@ describe('airi-card store', () => {
     expect(stageModelStore.stageModelSelected).toBe('display-model-iru-v2')
   })
 
+  it('persists the stage view the card loads its body model with', async () => {
+    const cardStore = useAiriCardStore()
+    await cardStore.initialize()
+
+    expect(await cardStore.updateActiveCardStageView({
+      live2d: { x: 8, y: -3, scale: 1.25 },
+      vrm: { x: 0, y: 0.4, z: 0, cameraDistance: 1.5, cameraFOV: 35 },
+    })).toBe(true)
+    expect(cardStore.activeCard?.extensions.airi.modules.live2d).toEqual({
+      view: { x: 8, y: -3, scale: 1.25 },
+    })
+    expect(cardStore.activeCard?.extensions.airi.modules.vrm).toEqual({
+      view: { x: 0, y: 0.4, z: 0, cameraDistance: 1.5, cameraFOV: 35 },
+    })
+
+    // Clearing the view returns the card to following the runtime stage.
+    expect(await cardStore.updateActiveCardStageView(undefined)).toBe(true)
+    expect(cardStore.activeCard?.extensions.airi.modules.live2d).toBeUndefined()
+    expect(cardStore.activeCard?.extensions.airi.modules.vrm).toBeUndefined()
+  })
+
   // ROOT CAUSE:
   //
   // Card activation changes `activeCardId`, but the previous implementation

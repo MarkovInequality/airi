@@ -1,6 +1,6 @@
 import type { Card } from '@proj-airi/ccc'
 
-import type { AiriExtension } from '../types/airiCard'
+import type { AiriExtension, CardStageView } from '../types/airiCard'
 
 import {
   check,
@@ -16,6 +16,8 @@ import {
   unknown,
 } from 'valibot'
 
+import { mergeCardStageViewIntoModules } from './card-stage-view'
+
 export type AiriCardDraftValidationError = 'name' | 'version' | 'invalid_artistry_json'
 
 /** Module settings owned by the AIRI Card editor form. */
@@ -24,6 +26,8 @@ interface AiriCardEditorModules {
   vision: AiriExtension['modules']['vision']
   speech: Pick<AiriExtension['modules']['speech'], 'provider' | 'model' | 'voice_id' | 'pitch' | 'ssml'>
   displayModelId?: string
+  /** Scale and position the card's body model loads in at, or `undefined` to drop it. */
+  stageView?: CardStageView
   artistry: Pick<
     NonNullable<AiriExtension['modules']['artistry']>,
     | 'provider'
@@ -129,6 +133,10 @@ export function applyAiriCardEditorModules(
     ? card.extensions.airi
     : undefined
 
+  // The stage view is stored per renderer, next to the body model source the
+  // editor does not own, so it is merged instead of assigned.
+  const { stageView, ...editedModules } = edited
+
   return {
     ...card,
     extensions: {
@@ -137,7 +145,7 @@ export function applyAiriCardEditorModules(
         ...existing,
         modules: {
           ...existing?.modules,
-          ...edited,
+          ...editedModules,
           speech: {
             ...existing?.modules.speech,
             ...edited.speech,
@@ -146,6 +154,7 @@ export function applyAiriCardEditorModules(
             ...existing?.modules.artistry,
             ...edited.artistry,
           },
+          ...mergeCardStageViewIntoModules(existing?.modules, stageView),
         },
         agents: existing?.agents ?? {},
       },

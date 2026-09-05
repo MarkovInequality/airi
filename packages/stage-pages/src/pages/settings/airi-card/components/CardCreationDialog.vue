@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type { Card } from '@proj-airi/ccc'
-import type { AiriExtension } from '@proj-airi/stage-ui/stores/modules/airi-card'
+import type { AiriExtension, CardStageView } from '@proj-airi/stage-ui/stores/modules/airi-card'
 
 import { isCustomProvidersDisabled } from '@proj-airi/stage-shared'
 import { useAnalytics } from '@proj-airi/stage-ui/composables'
 import { DEFAULT_ARTISTRY_WIDGET_INSTRUCTION } from '@proj-airi/stage-ui/constants/prompts/artistry-instruction'
 import { applyAiriCardEditorModules, safeParseAiriCardDraft } from '@proj-airi/stage-ui/services/airi-card-editor'
+import { resolveCardStageView } from '@proj-airi/stage-ui/services/card-stage-view'
 import { useDisplayModelsStore } from '@proj-airi/stage-ui/stores/display-models'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { useArtistryStore } from '@proj-airi/stage-ui/stores/modules/artistry'
@@ -99,6 +100,8 @@ const speechVoicesLoadedFor = ref<string>('')
 const selectedSpeechPitch = ref<number>(0)
 const selectedSpeechSsmlEnabled = ref<boolean>(false)
 const selectedDisplayModelId = ref<string>('')
+/** Scale and position the body model loads in at, or `undefined` to follow the runtime. */
+const selectedStageView = ref<CardStageView | undefined>()
 
 // Artistry configuration
 const selectedArtistryProvider = ref<string>('')
@@ -119,6 +122,43 @@ const displayModelOptions = computed(() =>
     label: model.name,
   })),
 )
+
+const stageViewSummary = computed(() => {
+  const view = selectedStageView.value
+  if (!view)
+    return []
+
+  const lines: string[] = []
+  if (view.live2d) {
+    lines.push(t('settings.pages.card.stage_view.live2d', {
+      x: (view.live2d.x ?? 0).toFixed(1),
+      y: (view.live2d.y ?? 0).toFixed(1),
+      scale: (view.live2d.scale ?? 1).toFixed(2),
+    }))
+  }
+  if (view.vrm) {
+    lines.push(t('settings.pages.card.stage_view.vrm', {
+      x: (view.vrm.x ?? 0).toFixed(2),
+      y: (view.vrm.y ?? 0).toFixed(2),
+      z: (view.vrm.z ?? 0).toFixed(2),
+      distance: (view.vrm.cameraDistance ?? 0).toFixed(2),
+      fov: (view.vrm.cameraFOV ?? 0).toFixed(0),
+    }))
+  }
+
+  return lines
+})
+
+// Set when the stage runs a renderer with no view controls, so the button
+// reports why nothing was captured.
+const stageViewCaptureUnsupported = ref(false)
+
+async function captureStageView() {
+  const view = await cardStore.captureStageView()
+  stageViewCaptureUnsupported.value = !view
+  if (view)
+    selectedStageView.value = view
+}
 
 // Computed: available consciousness provider options
 const consciousnessProviderOptions = computed(() => {
@@ -389,6 +429,7 @@ async function saveCard(card: Card, activate: boolean): Promise<boolean> {
       ssml: selectedSpeechSsmlEnabled.value,
     },
     displayModelId: selectedDisplayModelId.value || defaultDisplayModelId.value,
+    stageView: selectedStageView.value,
     artistry: {
       provider: selectedArtistryProvider.value || defaultArtistryProvider.value,
       model: selectedArtistryModel.value,
@@ -457,6 +498,8 @@ function initializeCard(): Card {
   selectedSpeechPitch.value = airiExt?.modules?.speech?.pitch ?? defaultSpeechPitch.value
   selectedSpeechSsmlEnabled.value = airiExt?.modules?.speech?.ssml ?? defaultSpeechSsmlEnabled.value
   selectedDisplayModelId.value = airiExt?.modules?.displayModelId || defaultDisplayModelId.value
+  selectedStageView.value = resolveCardStageView(airiExt?.modules)
+  stageViewCaptureUnsupported.value = false
 
   // NOTICE: keep legacy `extensions.airi.artistry` fallback so existing cards continue to load.
   const artistrySettings = airiExt?.modules?.artistry || airiExt?.artistry
@@ -753,6 +796,46 @@ function getDefaultPlaceholder(defaultValue: string | undefined): string {
                   :placeholder="getDefaultPlaceholder(defaultDisplayModelId)"
                   class="w-full"
                 />
+              </div>
+
+              <!-- Stage view -->
+              <div :class="['flex', 'flex-col', 'gap-2', 'sm:col-span-2']">
+                <label :class="['flex', 'flex-row', 'items-center', 'gap-2', 'text-sm', 'text-neutral-500', 'dark:text-neutral-400']">
+                  <div i-solar:crop-minimalistic-bold-duotone />
+                  {{ t('settings.pages.card.stage_view.label') }}
+                </label>
+                <span :class="['text-xs', 'text-neutral-400', 'dark:text-neutral-500']">
+                  {{ t('settings.pages.card.stage_view.description') }}
+                </span>
+                <div v-if="stageViewSummary.length" :class="['flex', 'flex-col', 'gap-1']">
+                  <span
+                    v-for="line in stageViewSummary" :key="line"
+                    :class="['font-mono', 'text-xs', 'text-neutral-500', 'dark:text-neutral-400']"
+                  >
+                    {{ line }}
+                  </span>
+                </div>
+                <span v-else :class="['text-xs', 'text-neutral-400', 'dark:text-neutral-500']">
+                  {{ t('settings.pages.card.stage_view.none') }}
+                </span>
+                <span v-if="stageViewCaptureUnsupported" :class="['text-xs', 'text-amber-600', 'dark:text-amber-400']">
+                  {{ t('settings.pages.card.stage_view.unsupported') }}
+                </span>
+                <div :class="['flex', 'flex-row', 'flex-wrap', 'gap-2']">
+                  <Button
+                    icon="i-solar:camera-bold-duotone"
+                    :label="t('settings.pages.card.stage_view.capture')"
+                    :disabled="false"
+                    @click="captureStageView()"
+                  />
+                  <Button
+                    v-if="stageViewSummary.length"
+                    icon="i-solar:trash-bin-trash-bold-duotone"
+                    :label="t('settings.pages.card.stage_view.clear')"
+                    :disabled="false"
+                    @click="selectedStageView = undefined"
+                  />
+                </div>
               </div>
             </div>
           </div>
