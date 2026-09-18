@@ -294,10 +294,45 @@ export function isProbablyAngleTag(index: number, text: string): boolean {
   return true
 }
 
-export function processNarrative(text: string, options?: TtsInputChunkOptions): string {
-  if (!options?.stripNarrative)
-    return text
+/**
+ * Openers whose closer often arrives far later in a stream, because the span
+ * holds a whole stage direction rather than a word or two. A span opened by one
+ * of these is held longer before the caller gives up waiting.
+ */
+const LONG_FORM_OPENERS = ['[', '【', '<', '（']
 
+/** Characters held for an unclosed {@link LONG_FORM_OPENERS} span. */
+const LONG_FORM_HOLD_LIMIT = 800
+/** Characters held for any other unclosed marker, such as a lone `*`. */
+const DEFAULT_HOLD_LIMIT = 200
+
+interface NarrativeScan {
+  /** `text` with every completed narration span removed. */
+  text: string
+  /**
+   * True when the scan ended inside a span whose closer never arrived. On a
+   * partial stream that usually means the closer is still in flight.
+   */
+  hasUnclosed: boolean
+  /**
+   * How many characters a streaming caller should accumulate before it stops
+   * waiting for the closer. Only meaningful while `hasUnclosed` is true.
+   */
+  holdLimit: number
+}
+
+/**
+ * Single pass over `text` that both removes completed narration spans and
+ * reports the marker state at the end of the string.
+ *
+ * Both results come from one walk on purpose. A streaming caller has to decide
+ * "is a span still open?" using exactly the rule that decides "is this span
+ * strippable?". Deciding them separately is what let `* *` slip through: an
+ * asterisk-parity check called the span closed and released the text, while
+ * this walk had an opener pending, so the closing `*` arrived orphaned and the
+ * narration was spoken.
+ */
+function scanNarrative(text: string, options?: TtsInputChunkOptions): NarrativeScan {
   const rangesToRemove: [number, number][] = []
   const charsToRemove = new Set<number>()
 
@@ -355,29 +390,39 @@ export function processNarrative(text: string, options?: TtsInputChunkOptions): 
       if (!charsToRemove.has(i))
         result += text[i]
     }
-
-    return result
   }
+  else {
+    rangesToRemove.sort((a, b) => a[0] - b[0])
+    let rangeIndex = 0
 
-  rangesToRemove.sort((a, b) => a[0] - b[0])
-  let rangeIndex = 0
+    for (let i = 0; i < text.length; i++) {
+      while (
+        rangeIndex < rangesToRemove.length
+        && i > rangesToRemove[rangeIndex]![1]
+      ) {
+        rangeIndex += 1
+      }
 
-  for (let i = 0; i < text.length; i++) {
-    while (
-      rangeIndex < rangesToRemove.length
-      && i > rangesToRemove[rangeIndex]![1]
-    ) {
-      rangeIndex += 1
+      const activeRange = rangesToRemove[rangeIndex]
+      if (activeRange && i >= activeRange[0] && i <= activeRange[1])
+        continue
+
+      result += text[i]
     }
-
-    const activeRange = rangesToRemove[rangeIndex]
-    if (activeRange && i >= activeRange[0] && i <= activeRange[1])
-      continue
-
-    result += text[i]
   }
 
-  return result
+  return {
+    text: result,
+    hasUnclosed: stack.length > 0 || starOpenIndex !== -1,
+    holdLimit: stack.some(entry => LONG_FORM_OPENERS.includes(entry.char)) ? LONG_FORM_HOLD_LIMIT : DEFAULT_HOLD_LIMIT,
+  }
+}
+
+export function processNarrative(text: string, options?: TtsInputChunkOptions): string {
+  if (!options?.stripNarrative)
+    return text
+
+  return scanNarrative(text, options).text
 }
 
 // ------------------------------------------------------------------
@@ -413,38 +458,18 @@ export function createTtsSegmentStream(
               continue
             }
 
+            // LLM tokens split at arbitrary points, so a span can straddle
+            // several of them. Withhold text while a marker is open and release
+            // it once the closer lands — or once the held text passes the hold
+            // limit, which covers a model that never closes what it opened.
             pendingText += value.value
-            const stack: string[] = []
 
-            for (let i = 0; i < pendingText.length; i++) {
-              const char = pendingText[i]
-              if (OPENERS.includes(char)) {
-                if (char === '<' && !isProbablyAngleTag(i, pendingText)) {
-                  continue
-                }
-                stack.push(char)
-              }
-              else if (CLOSERS.includes(char)) {
-                const lastOpen = stack[stack.length - 1]
-                if (lastOpen && BRACKET_MAP[lastOpen] === char) {
-                  stack.pop()
-                }
-              }
-            }
+            const scan = scanNarrative(pendingText, options)
+            if (scan.hasUnclosed && pendingText.length <= scan.holdLimit)
+              continue
 
-            const bracketsUnclosed = stack.length > 0
-            const starMatch = pendingText.match(/\*([^*]*)$/)
-            const starsUnclosed = (pendingText.match(/\*/g) || []).length % 2 !== 0
-              && starMatch !== null && !starMatch[1].startsWith(' ')
-            const hasUnclosed = bracketsUnclosed || starsUnclosed
-            const hasNarrativeUnclosed = stack.some(char => ['[', '【', '<', '（'].includes(char))
-            const fallbackLimit = (options?.stripNarrative && hasNarrativeUnclosed) ? 800 : 200
-
-            if (!hasUnclosed || pendingText.length > fallbackLimit) {
-              const textToEmit = processNarrative(pendingText, options)
-              writeBytes(encoder.encode(textToEmit))
-              pendingText = ''
-            }
+            writeBytes(encoder.encode(scan.text))
+            pendingText = ''
           }
         }
         else if (value.type === 'special' || value.type === 'flush') {

@@ -573,6 +573,11 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
     }
   },
   playback: playbackManager,
+  // Models narrate their own stage directions — `*smiles softly*`, `(sighs)`,
+  // `<laughs>` — which belong in the chat transcript but read as literal
+  // punctuation when a voice speaks them. Stripping happens on the way to TTS
+  // only, so captions and message history keep the original text.
+  segmenterOptions: { stripNarrative: true },
 })
 
 initIOTracer()
