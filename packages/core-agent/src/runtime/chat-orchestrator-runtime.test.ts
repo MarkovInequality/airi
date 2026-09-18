@@ -170,6 +170,44 @@ describe('createChatOrchestratorRuntime', () => {
     expect(harness.foregroundPatches.some(message => message.content === '1234')).toBe(true)
   })
 
+  // ROOT CAUSE:
+  //
+  // The marker parser keeps a 5-character marker-safety tail and emits everything before
+  // it, so a provider that streams one character per delta makes each space between two
+  // words its own literal. `onLiteral` then skipped it:
+  //
+  //   if (speechOnly.trim()) { buildingMessage.content += speechOnly; ... }
+  //
+  // Whitespace-only literals never reached the message or the token-literal hooks, so both
+  // the rendered chat message and the TTS input read "Hellothere,howareyou".
+  //
+  // We fixed this by skipping only empty literals:
+  //
+  //   if (speechOnly) { ... }
+  it('keeps spaces that arrive as whitespace-only literals from character-by-character deltas', async () => {
+    const harness = createHarness()
+    const spokenLiterals: string[] = []
+    harness.runtime.hooks.onTokenLiteral(async (literal) => {
+      spokenLiterals.push(literal)
+    })
+
+    const reply = 'Hello there, how are you doing today?'
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      for (const text of reply)
+        await options?.onStreamEvent?.({ type: 'text-delta', text })
+
+      await options?.onStreamEvent?.({ type: 'finish', finishReason: 'stop' })
+    })
+
+    await harness.runtime.ingest('greet me', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(harness.foregroundPatches.at(-1)?.content).toBe(reply)
+    expect(spokenLiterals.join('')).toBe(reply)
+  })
+
   it('stores tool names with the user message and omits them from provider messages', async () => {
     const harness = createHarness()
 

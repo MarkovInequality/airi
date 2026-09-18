@@ -618,7 +618,13 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
           const speechOnly = categorizer.filterToSpeech(literal, streamPosition)
           streamPosition += literal.length
 
-          if (speechOnly.trim()) {
+          // A literal can be a single whitespace character: the marker parser holds a
+          // 5-character marker-safety tail and emits everything before it, so providers
+          // that stream one character at a time make the space between two words its own
+          // literal. Skipping whitespace-only literals here dropped those spaces from both
+          // the rendered message and the TTS hooks, so only genuinely empty literals are
+          // skipped.
+          if (speechOnly) {
             buildingMessage.content += speechOnly
 
             await hooks.emitTokenLiteralHooks(speechOnly, streamingMessageContext)
