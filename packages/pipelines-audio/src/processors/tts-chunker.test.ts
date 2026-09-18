@@ -152,7 +152,83 @@ describe('tTS Chunker Logic Cleanup', () => {
         { stripNarrative: true },
       )
 
-      expect(await collect(stream)).toBe('*  rest')
+      // The gap left by the stripped span is one blank, not two: `sanitizeChunk`
+      // collapses blank runs so removed spans and removed emoji do not leave
+      // ragged spacing in the spoken text.
+      expect(await collect(stream)).toBe('* rest')
+    })
+  })
+
+  describe('createTtsSegmentStream unspoken-character stripping', () => {
+    function streamOf(texts: string[]): ReadableStream<TextToken> {
+      return new ReadableStream({
+        start(controller) {
+          texts.forEach((value, sequence) => controller.enqueue({
+            type: 'literal',
+            value,
+            streamId: 's',
+            intentId: 'i',
+            sequence,
+            createdAt: 0,
+          }))
+          controller.close()
+        },
+      })
+    }
+
+    async function spoken(texts: string[]): Promise<string> {
+      const segments: string[] = []
+      const stream = createTtsSegmentStream(streamOf(texts), { streamId: 's', intentId: 'i' })
+      for await (const segment of stream)
+        segments.push(segment.text)
+
+      return segments.join(' ')
+    }
+
+    it('keeps emoji and decoration out of the spoken text', async () => {
+      expect(await spoken(['Hello \u{1F600} there, how are you \u2192 today?'])).toBe('Hello there, how are you today?')
+      expect(await spoken(['Nice \u{1F468}\u200D\u{1F469}\u200D\u{1F467} family. Done \u2713 now.'])).toBe('Nice family. Done now.')
+    })
+
+    // ROOT CAUSE:
+    //
+    // The chunker discarded every grapheme cluster wider than one UTF-16 unit:
+    //
+    //   if (value.length > 1) { previousValue = value; continue }
+    //
+    // That removed emoji only as a side effect, and took decomposed accents,
+    // complex-script clusters, and astral letters with them, so a decomposed
+    // "cafe" spoke as "caf" and Devanagari vanished entirely.
+    //
+    // We fixed this by buffering the cluster and stripping only what is
+    // genuinely unpronounceable.
+    it('no longer eats multi-unit clusters that are real speech', async () => {
+      // Asserted in the decomposed form that was fed in: the chunker preserves
+      // the cluster, it does not normalize it.
+      expect(await spoken(['cafe\u0301 au lait, bonjour.'])).toBe('cafe\u0301 au lait, bonjour.')
+      expect(await spoken(['\u0928\u093F \u0939\u0948 \u0905\u091A\u094D\u091B\u093E.'])).toBe('\u0928\u093F \u0939\u0948 \u0905\u091A\u094D\u091B\u093E.')
+      expect(await spoken(['say \u{20BB7} now.'])).toBe('say \u{20BB7} now.')
+    })
+
+    it('keeps phonetic notation, currency, and math spoken', async () => {
+      expect(await spoken(['The \u0283 and \u0259 sounds.'])).toBe('The \u0283 and \u0259 sounds.')
+      expect(await spoken(['It costs $5 + 3, about 90% off.'])).toBe('It costs $5 + 3, about 90% off.')
+      expect(await spoken(['It is 25\u00B0C outside.'])).toBe('It is 25\u00B0C outside.')
+    })
+
+    it('does not glue words together when decoration sat between them', async () => {
+      expect(await spoken(['hi\u{1F600}there, friend.'])).toBe('hi there, friend.')
+    })
+
+    it('emits no segment for a message that is only emoji', async () => {
+      // A whitespace-only chunk must not reach `options.tts` as an empty
+      // synthesis request.
+      expect(await spoken(['\u{1F600}\u{1F600}\u{1F600}'])).toBe('')
+    })
+
+    it('strips an emoji whose surrogate pair straddles two literals', async () => {
+      const emoji = '\u{1F600}'
+      expect(await spoken(['hi ', emoji[0], emoji[1], ' there.'])).toBe('hi there.')
     })
   })
 

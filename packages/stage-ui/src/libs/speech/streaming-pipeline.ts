@@ -1,3 +1,5 @@
+import { createUnspokenTextFilter } from '@proj-airi/pipelines-audio'
+
 import { getAuthToken } from '../auth'
 import { SERVER_URL } from '../server'
 
@@ -137,6 +139,12 @@ export function createStreamingTtsPipeline(options: StreamingTtsPipelineOptions)
    * the handshake hasn't completed yet).
    */
   const beforeOpenQueue: string[] = []
+  /**
+   * Holds the one piece of cross-chunk state the unspoken-text strip needs: a
+   * trailing high surrogate whose low half has not arrived yet. Scoped per
+   * pipeline so a cancelled session cannot leak half a code point into the next.
+   */
+  const unspokenTextFilter = createUnspokenTextFilter()
   /** Binary chunks accumulated since the last sentence flush. */
   let chunks: ArrayBuffer[] = []
   let chunkBytes = 0
@@ -379,18 +387,28 @@ export function createStreamingTtsPipeline(options: StreamingTtsPipelineOptions)
     appendText(text: string) {
       if (text.length === 0)
         return
+
+      // This path has no segmenter, so it is the only place emoji and other
+      // unpronounceable decoration can be kept out of the upstream model. The
+      // filter is stateful because a surrogate pair can straddle two chunks.
+      const spoken = unspokenTextFilter.push(text)
+      if (spoken.length === 0)
+        return
+
       // Pure-whitespace chunks (e.g. the " " between two LLM tokens) ARE
       // forwarded verbatim. Dropping them would corrupt the text the
       // upstream model sees ("hello" + " " + "world" → "helloworld").
       // The per-character billing cost is negligible compared to the
       // semantic risk; codex review LOW #7 noted the wasted units but
       // accepted the trade-off.
-      safeSend(JSON.stringify({ event: 'text', text }))
+      safeSend(JSON.stringify({ event: 'text', text: spoken }))
     },
     finish() {
+      unspokenTextFilter.reset()
       safeSend(JSON.stringify({ event: 'finish' }))
     },
     cancel() {
+      unspokenTextFilter.reset()
       if (closed || terminationRequested)
         return
       safeSend(JSON.stringify({ event: 'cancel' }))

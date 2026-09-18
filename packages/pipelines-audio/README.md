@@ -28,3 +28,25 @@ buffer.push('hello')
 buffer.push('world')
 await buffer.dispose()
 ```
+
+## Unspoken-character stripping
+
+Emoji and decoration reach a TTS engine as either silence, a spelled-out CLDR
+name ("grinning face"), or a stall. `stripUnspokenText` removes them and keeps
+everything a listener expects to hear.
+
+```ts
+import { createUnspokenTextFilter, stripUnspokenText } from '@proj-airi/pipelines-audio'
+
+stripUnspokenText('Hi 😀! The ʃ sound costs $5 ♪')
+// => 'Hi ! The ʃ sound costs $5 '
+```
+
+Stripped: pictographs and their sequence glue, `Other_Symbol` (♪ ✓ ★ © ®),
+arrows, and bullets. Kept: currency, math, the degree sign, phonetic/IPA
+characters, and all letters, digits, and punctuation.
+
+`createTtsSegmentStream` applies this per grapheme cluster already. Use
+`createUnspokenTextFilter` only when stripping a raw chunk stream that does not
+go through the segmenter — it withholds a trailing high surrogate so an emoji
+split across two chunks is still recognized.

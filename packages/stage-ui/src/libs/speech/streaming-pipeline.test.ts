@@ -169,6 +169,56 @@ describe('createStreamingTtsPipeline', () => {
     expect(calls[1].audio.__byteLength).toBe(chunks[2].length)
   })
 
+  // This path has no segmenter, so `appendText` is the only place emoji can be
+  // kept out of the upstream model. The surrogate split is not hypothetical:
+  // the marker parser emits `buffer.slice(0, -5)`, which can cut a pair in half.
+  it('strips unpronounceable characters, including an emoji split across chunks', async () => {
+    server = await startMockServer((ws) => {
+      ws.on('message', (data, isBinary) => {
+        if (isBinary)
+          return
+        const ev = JSON.parse(data.toString()) as { event?: string }
+        if (ev.event === 'finish')
+          ws.send(JSON.stringify({ event: 'session.finished', payload: {} }))
+      })
+    })
+
+    const onDone = vi.fn()
+    const handle = createStreamingTtsPipeline({
+      serverUrl: server.url,
+      model: 'volcengine/seed-tts-1.0',
+      voice: 'mock',
+      audioContext: makeStubAudioContext(),
+      onDone,
+    })
+
+    const emoji = '\u{1F600}'
+    handle.appendText('hi ')
+    handle.appendText(emoji[0])
+    handle.appendText(emoji[1])
+    handle.appendText(' there \u2192 ')
+    handle.appendText('friend.')
+    handle.finish()
+
+    await new Promise<void>((resolve) => {
+      onDone.mockImplementation(() => resolve())
+      setTimeout(resolve, 1500)
+    })
+
+    await server.startObserved
+    const sent = server.receivedFrames
+      .filter(f => f.kind === 'text')
+      .map(f => JSON.parse(f.data as string) as { event: string, text?: string })
+      .filter(f => f.event === 'text')
+      .map(f => f.text ?? '')
+      .join('')
+
+    expect(sent).not.toContain(emoji)
+    expect(sent).not.toContain('\uFFFD')
+    expect(sent).not.toContain('\u2192')
+    expect(sent.replace(/\s+/g, ' ')).toBe('hi there friend.')
+  })
+
   it('buffers entire session when bufferEntireSession is true', async () => {
     const chunks = [Buffer.from([1, 2, 3, 4]), Buffer.from([5, 6, 7, 8])]
     server = await startMockServer((ws) => {

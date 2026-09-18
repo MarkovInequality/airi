@@ -5,6 +5,7 @@ import type { TextSegment, TextToken } from '../types'
 import { readGraphemeClusters } from 'clustr'
 
 import { createPushStream } from '../stream'
+import { stripUnspokenText } from './unspoken-text'
 
 export const TTS_FLUSH_INSTRUCTION = '\u200B'
 export const TTS_SPECIAL_TOKEN = '\u2063'
@@ -69,7 +70,23 @@ export async function* chunkTtsInput(
   while (!current.done) {
     let value = current.value
 
+    // A cluster wider than one UTF-16 unit is never punctuation, so it skips
+    // the classification below and goes straight to the buffer. It used to be
+    // discarded outright, which silently ate decomposed accents (a "cafe" whose
+    // accent is a combining mark spoke as "caf"), Indic and other
+    // complex-script clusters, and every astral letter, while removing emoji
+    // only as a side effect.
     if (value.length > 1) {
+      buffer += stripUnspokenText(value) || ' '
+      previousValue = value
+      current = await iterator.next()
+      continue
+    }
+
+    // Single-unit decoration (✓ ♪ → •) leaves a space so the words it separated
+    // do not run together once it is gone.
+    if (stripUnspokenText(value) === '') {
+      buffer += ' '
       previousValue = value
       current = await iterator.next()
       continue
@@ -211,6 +228,8 @@ export async function chunkEmitter(
     return text
       .replaceAll(TTS_SPECIAL_TOKEN, '')
       .replaceAll(TTS_FLUSH_INSTRUCTION, '')
+      // Stripped decoration leaves the blanks that surrounded it behind.
+      .replace(/[ \t]{2,}/g, ' ')
       .trim()
   }
 
