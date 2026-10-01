@@ -157,6 +157,95 @@ describe('tTS Chunker Logic Cleanup', () => {
       // ragged spacing in the spoken text.
       expect(await collect(stream)).toBe('* rest')
     })
+
+    describe('math spans', () => {
+      const mathOptions = { stripNarrative: true, stripMath: true }
+
+      it('removes everything between double dollar signs', () => {
+        expect(processNarrative('The speed $$v_0$$ is constant.', mathOptions)).toBe('The speed  is constant.')
+        expect(processNarrative('$$E = mc^2$$', mathOptions)).toBe('')
+      })
+
+      it('keeps single dollar signs, which are currency', () => {
+        expect(processNarrative('It costs $5, not $10.', mathOptions)).toBe('It costs $5, not $10.')
+      })
+
+      // LaTeX uses `(`, `[`, `<`, and `*` as math. If the narrative scan saw
+      // them, `$$f(x)$$` would lose only `(x)` and `$$a*b + c*d$$` would open an
+      // emphasis span that eats the rest of the reply.
+      it('does not read markers inside math as narration', () => {
+        expect(processNarrative('So $$f(x) = a*b + c*d$$ holds *nods*.', mathOptions)).toBe('So  holds .')
+        expect(processNarrative('Then $$a < b$$ and $$[0, 1]$$ follow.', mathOptions)).toBe('Then  and  follow.')
+      })
+
+      it('removes math even when narration keeps its text', () => {
+        const keepOptions = { ...mathOptions, keepNarrativeText: true }
+
+        expect(processNarrative('Say $$x^2$$ *smiles*', keepOptions)).toBe('Say  smiles')
+      })
+
+      it('keeps math when math stripping is off', () => {
+        expect(processNarrative('The speed $$v_0$$ is constant.', { stripNarrative: true })).toBe('The speed $$v_0$$ is constant.')
+      })
+
+      // An LLM can split `$$` itself across tokens. If a token that ends in one
+      // `$` were released, the next token would start with an unpaired `$` and
+      // the math would be spoken.
+      it('drops math whose delimiters straddle tokens', async () => {
+        const stream = createTtsSegmentStream(
+          streamOf(['The speed $', '$v_0', ' = 3$', '$ stays', ' constant.']),
+          { streamId: 's', intentId: 'i' },
+          mathOptions,
+        )
+
+        expect(await collect(stream)).toBe('The speed stays constant.')
+      })
+
+      it('strips math with only math stripping on', async () => {
+        const stream = createTtsSegmentStream(
+          streamOf(['Area is $$\\pi r^2$$', ' *smiles*.']),
+          { streamId: 's', intentId: 'i' },
+          { stripMath: true },
+        )
+
+        expect(await collect(stream)).toBe('Area is *smiles*.')
+      })
+    })
+
+    // The chat hides `%%...%%` and shows the formula. The voice skips the
+    // formula and reads the hint, so only the delimiters go.
+    describe('pronunciation hints', () => {
+      const hintOptions = { stripNarrative: true, stripMath: true, unwrapPronunciation: true }
+
+      it('keeps the hint text and removes its delimiters', () => {
+        expect(processNarrative('The speed $$v_0$$ %%v naught%% is constant.', hintOptions)).toBe('The speed  v naught is constant.')
+      })
+
+      it('keeps single percent signs', () => {
+        expect(processNarrative('It is 90% off.', hintOptions)).toBe('It is 90% off.')
+      })
+
+      // `%` starts a LaTeX comment, so `%%` inside math is part of the formula.
+      it('ignores percent signs inside math', () => {
+        expect(processNarrative('So $$a %% b$$ holds.', hintOptions)).toBe('So  holds.')
+      })
+
+      it('keeps the delimiters when unwrapping is off', () => {
+        expect(processNarrative('Say %%v naught%% now.', { stripMath: true })).toBe('Say %%v naught%% now.')
+      })
+
+      // A released `%%` would be spoken, and its closer would then open a new
+      // hint in the next buffer.
+      it('unwraps a hint whose delimiters straddle tokens', async () => {
+        const stream = createTtsSegmentStream(
+          streamOf(['The speed $$v_0$$ %', '%v nau', 'ght%', '% is constant.']),
+          { streamId: 's', intentId: 'i' },
+          hintOptions,
+        )
+
+        expect(await collect(stream)).toBe('The speed v naught is constant.')
+      })
+    })
   })
 
   describe('createTtsSegmentStream unspoken-character stripping', () => {

@@ -56,16 +56,49 @@ const remarkChatMath: Plugin<[], Root> = () => (tree) => {
   })
 }
 
+// The blank before a hint goes with it, so `$$v_0$$ %%v naught%% is` keeps
+// one space between the formula and the next word.
+const completedPronunciationHint = /[ \t]*%%[\s\S]*?%%/g
+// A streamed reply renders after each token, so an unclosed hint is usually
+// waiting for its closer. It hides to the end of its text node. A stray `%%`
+// in a finished reply hides the same text, which is the cost of no flicker.
+const streamingPronunciationHint = /[ \t]*%%[\s\S]*$/
+
+/**
+ * Removes pronunciation hints from chat text.
+ *
+ * @example
+ * hidePronunciationHints(' %%v naught%% is constant.')
+ * // => ' is constant.'
+ */
+function hidePronunciationHints(text: string): string {
+  return text
+    .replace(completedPronunciationHint, '')
+    .replace(streamingPronunciationHint, '')
+}
+
+// The voice reads a hint in place of the formula before it. See
+// `unwrapPronunciation` in `packages/pipelines-audio`. Only text nodes change:
+// `%%` in code is code, and `%` in math starts a LaTeX comment.
+const remarkChatPronunciation: Plugin<[], Root> = () => (tree) => {
+  visit(tree, 'text', (node) => {
+    if (node.value.includes('%%'))
+      node.value = hidePronunciationHints(node.value)
+  })
+}
+
 /**
  * Defines the math syntax for AIRI chat Markdown.
  *
  * A single dollar sign stays text, and `$$...$$` defines inline math. A
  * `latex` or `tex` fence contains one formula per non-empty row. The `block`
- * meta value keeps the fence intact.
+ * meta value keeps the fence intact. A `%%...%%` span is a pronunciation hint
+ * for TTS, and the chat hides it. A single `%` stays text.
  */
 export const chatMathPreset = {
   plugins: [
     [remarkMath, { singleDollarTextMath: false }],
     remarkChatMath,
+    remarkChatPronunciation,
   ],
 } satisfies Preset

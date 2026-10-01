@@ -369,6 +369,33 @@ describe('useMarkdown', () => {
     expect(html).not.toContain('<a href=')
   })
 
+  // The voice reads the hint in place of the LaTeX, so the chat shows only the
+  // formula. `packages/pipelines-audio` keeps the hint text for TTS.
+  it('hides a pronunciation hint after inline math', () => {
+    const html = useMarkdown().processSync('The speed $$v_0$$ %%v naught%% is constant.')
+
+    expect(mathNodeCount(html)).toBe(1)
+    expect(html).not.toContain('v naught')
+    expect(html).not.toContain('%%')
+    expect(html).toContain('</span> is constant.</p>')
+  })
+
+  // A streamed reply renders after every token, so the opening `%%` arrives
+  // many renders before its closer.
+  it('hides a pronunciation hint that is still streaming', () => {
+    const html = useMarkdown().processSync('The speed $$v_0$$ %%v nau')
+
+    expect(html).not.toContain('v nau')
+    expect(html).not.toContain('%%')
+  })
+
+  it('keeps percent signs in code and single percent signs in text', () => {
+    const html = useMarkdown().processSync('Run `%%timeit%%` for 90% less time.')
+
+    expect(html).toContain('<code>%%timeit%%</code>')
+    expect(html).toContain('90% less time.')
+  })
+
   it('does not create a link for an untrusted KaTeX URL', () => {
     const html = useMarkdown().processSync(String.raw`$$\href{javascript:alert(1)}{x}$$`)
 

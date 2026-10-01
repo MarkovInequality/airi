@@ -28,6 +28,25 @@ export interface TtsInputChunkOptions {
   maximumWords?: number
   stripNarrative?: boolean
   keepNarrativeText?: boolean
+  /**
+   * Removes `$$...$$` spans and everything inside them before TTS. The chat
+   * renders these spans as math, but a voice would read the raw LaTeX aloud.
+   * The whole span goes even when `keepNarrativeText` is on, because LaTeX
+   * source is never speech. A single `$` is currency and stays.
+   *
+   * @default false
+   */
+  stripMath?: boolean
+  /**
+   * Removes the `%%` delimiters of a pronunciation hint and keeps its text, so
+   * `$$v_0$$ %%v naught%%` speaks "v naught" when `stripMath` is also on. The
+   * chat Markdown in `packages/stage-ui` hides the whole hint. `%%` inside
+   * math is a LaTeX comment and stays part of the formula. A single `%`
+   * stays.
+   *
+   * @default false
+   */
+  unwrapPronunciation?: boolean
 }
 
 export interface TtsChunkItem {
@@ -326,7 +345,10 @@ const LONG_FORM_HOLD_LIMIT = 800
 const DEFAULT_HOLD_LIMIT = 200
 
 interface NarrativeScan {
-  /** `text` with every completed narration span removed. */
+  /**
+   * `text` with every completed narration and math span removed, and with the
+   * delimiters of every completed pronunciation hint removed.
+   */
   text: string
   /**
    * True when the scan ended inside a span whose closer never arrived. On a
@@ -341,8 +363,8 @@ interface NarrativeScan {
 }
 
 /**
- * Single pass over `text` that both removes completed narration spans and
- * reports the marker state at the end of the string.
+ * Single pass over `text` that both removes completed narration and math
+ * spans and reports the marker state at the end of the string.
  *
  * Both results come from one walk on purpose. A streaming caller has to decide
  * "is a span still open?" using exactly the rule that decides "is this span
@@ -357,9 +379,57 @@ function scanNarrative(text: string, options?: TtsInputChunkOptions): NarrativeS
 
   const stack: { char: string, index: number }[] = []
   let starOpenIndex = -1
+  let mathOpenIndex = -1
+  let pronunciationOpenIndex = -1
+  // A `$` or `%` at the very end may be the first half of a `$$` or `%%` whose
+  // second half is in the next token, so it counts as an open marker.
+  let endsWithHalfDelimiter = false
 
   for (let i = 0; i < text.length; i++) {
     const char = text[i]
+
+    if (options?.stripMath && char === '$') {
+      if (text[i + 1] === '$') {
+        if (mathOpenIndex !== -1) {
+          rangesToRemove.push([mathOpenIndex, i + 1])
+          mathOpenIndex = -1
+        }
+        else {
+          mathOpenIndex = i
+        }
+        i += 1
+        continue
+      }
+
+      endsWithHalfDelimiter = i === text.length - 1
+    }
+
+    // LaTeX uses `*`, brackets, and `<` as math, and `%` starts a LaTeX
+    // comment. No other marker can open inside math.
+    if (mathOpenIndex !== -1)
+      continue
+
+    if (options?.unwrapPronunciation && char === '%') {
+      if (text[i + 1] === '%') {
+        if (pronunciationOpenIndex !== -1) {
+          charsToRemove.add(pronunciationOpenIndex)
+          charsToRemove.add(pronunciationOpenIndex + 1)
+          charsToRemove.add(i)
+          charsToRemove.add(i + 1)
+          pronunciationOpenIndex = -1
+        }
+        else {
+          pronunciationOpenIndex = i
+        }
+        i += 1
+        continue
+      }
+
+      endsWithHalfDelimiter = i === text.length - 1
+    }
+
+    if (!options?.stripNarrative)
+      continue
 
     if (char === '*') {
       if (starOpenIndex !== -1) {
@@ -402,43 +472,52 @@ function scanNarrative(text: string, options?: TtsInputChunkOptions): NarrativeS
     }
   }
 
+  // Spans whose text goes are ranges. Spans whose text stays, which are
+  // pronunciation hints and narration under `keepNarrativeText`, put only their
+  // delimiters in `charsToRemove`.
   let result = ''
+  rangesToRemove.sort((a, b) => a[0] - b[0])
+  let rangeIndex = 0
 
-  if (options?.keepNarrativeText) {
-    for (let i = 0; i < text.length; i++) {
-      if (!charsToRemove.has(i))
-        result += text[i]
+  for (let i = 0; i < text.length; i++) {
+    while (
+      rangeIndex < rangesToRemove.length
+      && i > rangesToRemove[rangeIndex]![1]
+    ) {
+      rangeIndex += 1
     }
+
+    const activeRange = rangesToRemove[rangeIndex]
+    if (activeRange && i >= activeRange[0] && i <= activeRange[1])
+      continue
+    if (charsToRemove.has(i))
+      continue
+
+    result += text[i]
   }
-  else {
-    rangesToRemove.sort((a, b) => a[0] - b[0])
-    let rangeIndex = 0
 
-    for (let i = 0; i < text.length; i++) {
-      while (
-        rangeIndex < rangesToRemove.length
-        && i > rangesToRemove[rangeIndex]![1]
-      ) {
-        rangeIndex += 1
-      }
-
-      const activeRange = rangesToRemove[rangeIndex]
-      if (activeRange && i >= activeRange[0] && i <= activeRange[1])
-        continue
-
-      result += text[i]
-    }
-  }
+  // Math is held as long as a long-form span: a display equation can run for
+  // hundreds of characters before its closing `$$` arrives.
+  const holdsLongForm = mathOpenIndex !== -1 || stack.some(entry => LONG_FORM_OPENERS.includes(entry.char))
 
   return {
     text: result,
-    hasUnclosed: stack.length > 0 || starOpenIndex !== -1,
-    holdLimit: stack.some(entry => LONG_FORM_OPENERS.includes(entry.char)) ? LONG_FORM_HOLD_LIMIT : DEFAULT_HOLD_LIMIT,
+    hasUnclosed: stack.length > 0
+      || starOpenIndex !== -1
+      || mathOpenIndex !== -1
+      || pronunciationOpenIndex !== -1
+      || endsWithHalfDelimiter,
+    holdLimit: holdsLongForm ? LONG_FORM_HOLD_LIMIT : DEFAULT_HOLD_LIMIT,
   }
 }
 
+/** True when any option asks {@link scanNarrative} to rewrite spans. */
+function rewritesSpans(options?: TtsInputChunkOptions): boolean {
+  return Boolean(options?.stripNarrative || options?.stripMath || options?.unwrapPronunciation)
+}
+
 export function processNarrative(text: string, options?: TtsInputChunkOptions): string {
-  if (!options?.stripNarrative)
+  if (!rewritesSpans(options))
     return text
 
   return scanNarrative(text, options).text
@@ -472,7 +551,7 @@ export function createTtsSegmentStream(
 
         if (value.type === 'literal') {
           if (value.value) {
-            if (!options?.stripNarrative) {
+            if (!rewritesSpans(options)) {
               writeBytes(encoder.encode(value.value))
               continue
             }
@@ -507,13 +586,8 @@ export function createTtsSegmentStream(
           }
         }
       }
-      if (pendingText) {
-        let finalPunt = pendingText
-        if (options?.stripNarrative) {
-          finalPunt = processNarrative(finalPunt, options)
-        }
-        writeBytes(encoder.encode(finalPunt))
-      }
+      if (pendingText)
+        writeBytes(encoder.encode(processNarrative(pendingText, options)))
       closeBytes()
     }
     catch (err) {
