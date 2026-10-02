@@ -208,6 +208,54 @@ describe('createChatOrchestratorRuntime', () => {
     expect(spokenLiterals.join('')).toBe(reply)
   })
 
+  // ROOT CAUSE:
+  //
+  // Text deltas reach the message through the marker parser, which delivers literals later than
+  // the event that carried them, and holds back a 5-character marker-safety tail. A tool-call
+  // event pushed its slice at once:
+  //
+  //   case 'tool-call': toolCallQueue.enqueue({ type: 'tool-call', ... })
+  //
+  // So the end of the text before a tool call landed after the tool call slice, and words split
+  // around it: "Let me " [tool call] "look at the repository. I found it."
+  //
+  // We fixed this by flushing the parser before the tool call slice is added:
+  //
+  //   case 'tool-call': await parser.flush(); toolCallQueue.enqueue(...)
+  it('keeps all text that streams before a tool call in front of the tool call', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      for (const text of ['Let me look ', 'at the ', 'repository.'])
+        await options?.onStreamEvent?.({ type: 'text-delta', text })
+
+      await options?.onStreamEvent?.({
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'builtIn_mcpCallTool',
+        args: '{}',
+      } as StreamEvent)
+      await options?.onStreamEvent?.({
+        type: 'tool-result',
+        toolCallId: 'call-1',
+        result: 'ok',
+      } as StreamEvent)
+      await options?.onStreamEvent?.({ type: 'text-delta', text: ' I found it.' })
+      await options?.onStreamEvent?.({ type: 'finish', finishReason: 'stop' })
+    })
+
+    await harness.runtime.ingest('look at the repo', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    const assistant = harness.sessionMessages['session-1']?.at(-1) as StreamingAssistantMessage
+    expect(assistant.slices).toEqual([
+      { type: 'text', text: 'Let me look at the repository.' },
+      expect.objectContaining({ type: 'tool-call' }),
+      { type: 'text', text: ' I found it.' },
+    ])
+  })
+
   it('stores tool names with the user message and omits them from provider messages', async () => {
     const harness = createHarness()
 

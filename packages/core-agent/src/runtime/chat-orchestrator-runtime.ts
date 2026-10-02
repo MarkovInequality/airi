@@ -804,6 +804,16 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
 
           switch (event.type) {
             case 'tool-call':
+              // The parser delivers text later than this event, and it holds back a tail of
+              // up to 5 characters to find markers. Without this flush, the end of the text
+              // before a tool call lands after the tool call slice, and a word can be split
+              // around it ("...the reposi" [tool call] "tory."). xsai does not wait for
+              // one event handler before it sends the next event, but the parser runs its
+              // work in call order, so the flush covers all text that arrived before this event.
+              await parser.flush()
+              if (shouldAbort())
+                return
+
               toolCallQueue.enqueue({
                 type: 'tool-call',
                 toolCall: event,
