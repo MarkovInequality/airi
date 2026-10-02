@@ -27,6 +27,7 @@ export default defineConfig({
       'packages/server-sdk',
       'packages/stage-shared',
       'packages/vitest-plugin-fakemic',
+      'services/opencode-mcp',
     ],
   },
 })

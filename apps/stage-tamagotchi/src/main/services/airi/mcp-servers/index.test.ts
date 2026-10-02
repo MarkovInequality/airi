@@ -1,4 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ElectronMainContextExtensions, ElectronMainEmitOptions } from '@moeru/eventa/adapters/electron/main'
+import type { BrowserWindow } from 'electron'
+
+import { EventEmitter } from 'node:events'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { createContext } from '@moeru/eventa'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { electronMcpServersChanged } from '../../../../shared/eventa'
 
 const appMock = vi.hoisted(() => ({
   getPath: vi.fn(),
@@ -12,6 +23,7 @@ const shellMock = vi.hoisted(() => ({
 const clientMocks = vi.hoisted(() => ({
   close: vi.fn(),
   connect: vi.fn(),
+  getInstructions: vi.fn(),
   listTools: vi.fn(),
 }))
 
@@ -39,6 +51,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: class {
     close = clientMocks.close
     connect = clientMocks.connect
+    getInstructions = clientMocks.getInstructions
     listTools = clientMocks.listTools
   },
 }))
@@ -85,5 +98,61 @@ describe('createMcpStdioManager', () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain('connect failed')
     expect(result.error).toContain('Missing required environment variable: API_KEY')
+  })
+
+  describe('server instructions', () => {
+    let userDataDir: string
+
+    beforeEach(async () => {
+      userDataDir = await mkdtemp(join(tmpdir(), 'airi-mcp-instructions-'))
+      appMock.getPath.mockReturnValue(userDataDir)
+      clientMocks.connect.mockResolvedValue(undefined)
+    })
+
+    afterEach(async () => {
+      await rm(userDataDir, { recursive: true, force: true })
+    })
+
+    async function writeConfig(mcpServers: Record<string, { command: string }>) {
+      await writeFile(join(userDataDir, 'mcp.json'), JSON.stringify({ mcpServers }))
+    }
+
+    it('lists the instructions that the running servers sent', async () => {
+      const { createMcpStdioManager } = await import('./index')
+      const manager = createMcpStdioManager()
+      await writeConfig({ opencode: { command: 'opencode-mcp' }, filesystem: { command: 'filesystem-mcp' } })
+      clientMocks.getInstructions
+        .mockReturnValueOnce('  Call opencode_session_prompt, then opencode_session_wait.\n')
+        .mockReturnValueOnce(undefined)
+
+      await manager.applyAndRestart()
+
+      expect(manager.listInstructions()).toEqual([
+        { serverName: 'opencode', instructions: 'Call opencode_session_prompt, then opencode_session_wait.' },
+      ])
+    })
+
+    it('sends a servers-changed event to a window after each restart until the window closes', async () => {
+      const { createMcpServersService, createMcpStdioManager } = await import('./index')
+      const manager = createMcpStdioManager()
+      await writeConfig({})
+      const context = createContext<ElectronMainContextExtensions, ElectronMainEmitOptions>()
+      const receivedEvents = vi.fn()
+      context.on(electronMcpServersChanged, receivedEvents)
+
+      // NOTICE:
+      // The service uses only the 'closed' event of the window. An EventEmitter gives that
+      // event, and the cast through `unknown` passes it where the full BrowserWindow type is required.
+      const window = new EventEmitter()
+      createMcpServersService({ context, manager, window: window as unknown as BrowserWindow })
+
+      await manager.applyAndRestart()
+      await vi.waitFor(() => expect(receivedEvents).toHaveBeenCalledTimes(1))
+
+      window.emit('closed')
+      await manager.applyAndRestart()
+
+      expect(receivedEvents).toHaveBeenCalledTimes(1)
+    })
   })
 })

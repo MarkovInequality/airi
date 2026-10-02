@@ -41,6 +41,7 @@ import {
   electronGetServerChannelConfig,
   electronGodotStageGetStatus,
   electronGodotStageStatusChanged,
+  electronMcpServersChanged,
   electronSettingsNavigate,
   electronStartTrackMousePosition,
   i18nGetLocale,
@@ -252,6 +253,14 @@ function createFullStageRuntime() {
 
   context.value.on(electronPluginToolsChanged, () => {
     void refreshPluginRuntimeTools()
+  })
+
+  // A restart of the MCP servers can change their instructions in the system prompt.
+  // `refresh` runs in the leader renderer, wherever the event arrives.
+  context.value.on(electronMcpServersChanged, () => {
+    void mcpToolsStore.refresh().catch((error) => {
+      console.warn('[App] Failed to refresh MCP runtime tools:', error)
+    })
   })
 
   return {

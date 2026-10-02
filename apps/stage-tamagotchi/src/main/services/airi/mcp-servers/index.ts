@@ -1,8 +1,10 @@
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
+import type { BrowserWindow } from 'electron'
 
 import type {
   ElectronMcpCallToolPayload,
   ElectronMcpCallToolResult,
+  ElectronMcpServerInstructions,
   ElectronMcpStdioApplyResult,
   ElectronMcpStdioConfigFile,
   ElectronMcpStdioConfigText,
@@ -27,9 +29,11 @@ import {
   electronMcpApplyAndRestart,
   electronMcpCallTool,
   electronMcpGetRuntimeStatus,
+  electronMcpListInstructions,
   electronMcpListTools,
   electronMcpOpenConfigFile,
   electronMcpReadConfigText,
+  electronMcpServersChanged,
   electronMcpTestServer,
   electronMcpWriteConfigText,
 } from '../../../../shared/eventa'
@@ -40,6 +44,8 @@ interface McpServerSession {
   client: Client
   transport: StdioClientTransport
   config: ElectronMcpStdioServerConfig
+  /** Instructions from the `initialize` result of the server. Fixed for the life of the session. */
+  instructions?: string
 }
 
 export interface McpStdioManager {
@@ -47,6 +53,12 @@ export interface McpStdioManager {
   openConfigFile: () => Promise<{ path: string }>
   applyAndRestart: () => Promise<ElectronMcpStdioApplyResult>
   listTools: () => Promise<ElectronMcpToolDescriptor[]>
+  listInstructions: () => ElectronMcpServerInstructions[]
+  /**
+   * Calls `listener` after each {@link McpStdioManager.applyAndRestart}, when the running servers
+   * can be different. Returns a function that removes the listener.
+   */
+  onServersChanged: (listener: () => void) => () => void
   callTool: (payload: ElectronMcpCallToolPayload) => Promise<ElectronMcpCallToolResult>
   stopAll: () => Promise<void>
   getRuntimeStatus: () => ElectronMcpStdioRuntimeStatus
@@ -116,6 +128,7 @@ export function createMcpStdioManager(): McpStdioManager {
   const log = useLogg('main/mcp-stdio').useGlobalConfig()
   const sessions = new Map<string, McpServerSession>()
   const runtimeStatuses = new Map<string, ElectronMcpStdioServerRuntimeStatus>()
+  const serversChangedListeners = new Set<() => void>()
   let updatedAt = Date.now()
 
   const setRuntimeStatus = (status: ElectronMcpStdioServerRuntimeStatus) => {
@@ -184,7 +197,7 @@ export function createMcpStdioManager(): McpStdioManager {
           log.withFields({ serverName: name }).warn(text)
         }
       })
-      sessions.set(name, { client, transport, config })
+      sessions.set(name, { client, transport, config, instructions: client.getInstructions()?.trim() || undefined })
       setRuntimeStatus({
         name,
         state: 'running',
@@ -246,7 +259,29 @@ export function createMcpStdioManager(): McpStdioManager {
 
     updatedAt = Date.now()
 
+    for (const listener of serversChangedListeners) {
+      try {
+        listener()
+      }
+      catch (error) {
+        log.withError(error).warn('mcp servers changed listener failed')
+      }
+    }
+
     return result
+  }
+
+  const listInstructions = (): ElectronMcpServerInstructions[] => {
+    return [...sessions.entries()]
+      .flatMap(([serverName, session]) => session.instructions ? [{ serverName, instructions: session.instructions }] : [])
+      .sort((left, right) => left.serverName.localeCompare(right.serverName))
+  }
+
+  const onServersChanged = (listener: () => void) => {
+    serversChangedListeners.add(listener)
+    return () => {
+      serversChangedListeners.delete(listener)
+    }
   }
 
   const listTools = async (): Promise<ElectronMcpToolDescriptor[]> => {
@@ -429,6 +464,8 @@ export function createMcpStdioManager(): McpStdioManager {
     openConfigFile,
     applyAndRestart,
     listTools,
+    listInstructions,
+    onServersChanged,
     callTool,
     stopAll,
     getRuntimeStatus,
@@ -458,7 +495,17 @@ export async function setupMcpStdioManager() {
   return manager
 }
 
-export function createMcpServersService(params: { context: ReturnType<typeof createContext>['context'], manager: McpStdioManager }) {
+/**
+ * Registers the MCP invoke handlers on the context of one window, and sends
+ * {@link electronMcpServersChanged} to that window after each restart of the servers.
+ * The subscription ends when the window closes.
+ */
+export function createMcpServersService(params: { context: ReturnType<typeof createContext>['context'], manager: McpStdioManager, window: BrowserWindow }) {
+  const stopServersChanged = params.manager.onServersChanged(() => {
+    params.context.emit(electronMcpServersChanged, undefined)
+  })
+  params.window.once('closed', stopServersChanged)
+
   defineInvokeHandler(params.context, electronMcpOpenConfigFile, async () => {
     return params.manager.openConfigFile()
   })
@@ -473,6 +520,10 @@ export function createMcpServersService(params: { context: ReturnType<typeof cre
 
   defineInvokeHandler(params.context, electronMcpListTools, async () => {
     return params.manager.listTools()
+  })
+
+  defineInvokeHandler(params.context, electronMcpListInstructions, async () => {
+    return params.manager.listInstructions()
   })
 
   defineInvokeHandler(params.context, electronMcpCallTool, async (payload) => {

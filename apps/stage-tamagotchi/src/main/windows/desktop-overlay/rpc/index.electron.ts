@@ -46,7 +46,7 @@ export async function setupDesktopOverlayElectronInvokes(params: {
 
   try {
     await setupBaseWindowElectronInvokes({ context, window: params.window, i18n: params.i18n, serverChannel: params.serverChannel })
-    createMcpServersService({ context, manager: params.mcpStdioManager })
+    createMcpServersService({ context, manager: params.mcpStdioManager, window: params.window })
     readiness = { state: 'ready' }
   }
   catch (error) {

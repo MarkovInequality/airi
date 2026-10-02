@@ -1,6 +1,7 @@
 import type { Tool } from '@xsai/shared-chat'
 
 import { useLlmToolsStore } from '@proj-airi/stage-ui/stores/ai/chat-llm/tools'
+import { useLlmToolsetPromptsStore } from '@proj-airi/stage-ui/stores/ai/chat-llm/toolset-prompts'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +10,10 @@ const invokeMocks = vi.hoisted(() => ({
     content: [{ type: 'text', text: 'ok' }],
     isError: false,
   })),
+  listMcpInstructions: vi.fn(async () => [{
+    serverName: 'opencode',
+    instructions: 'Call opencode_session_prompt, then opencode_session_wait.',
+  }]),
   listMcpTools: vi.fn(async () => [{
     serverName: 'filesystem',
     name: 'filesystem::search',
@@ -27,6 +32,8 @@ vi.mock('@proj-airi/electron-vueuse', () => ({
       return invokeMocks.listMcpTools
     if (event?.receiveEvent?.id === 'eventa:invoke:electron:mcp:call-tool-receive')
       return invokeMocks.callMcpTool
+    if (event?.receiveEvent?.id === 'eventa:invoke:electron:mcp:list-instructions-receive')
+      return invokeMocks.listMcpInstructions
 
     throw new Error(`Unexpected eventa invoke: ${JSON.stringify(event)}`)
   },
@@ -39,6 +46,7 @@ describe('useTamagotchiMcpToolsStore', async () => {
     setActivePinia(createPinia())
     invokeMocks.listMcpTools.mockClear()
     invokeMocks.callMcpTool.mockClear()
+    invokeMocks.listMcpInstructions.mockClear()
   })
 
   it('loads MCP tools, proxies execution, and clears them from the shared llm-tools store', async () => {
@@ -93,5 +101,31 @@ describe('useTamagotchiMcpToolsStore', async () => {
     store.dispose()
 
     expect(llmToolsStore.tools.filter(tool => tool.id.startsWith('mcp:'))).toEqual([])
+  })
+
+  it('adds the instructions of the running MCP servers to the system prompt until dispose', async () => {
+    const toolsetPrompts = useLlmToolsetPromptsStore()
+    const store = useTamagotchiMcpToolsStore()
+
+    await store.refresh()
+
+    expect(toolsetPrompts.activeToolsetPrompt).toContain('### MCP server "opencode"')
+    expect(toolsetPrompts.activeToolsetPrompt).toContain('call builtIn_mcpCallTool with the name "opencode::<tool name>"')
+    expect(toolsetPrompts.activeToolsetPrompt).toContain('Call opencode_session_prompt, then opencode_session_wait.')
+
+    store.dispose()
+
+    expect(toolsetPrompts.activeToolsetPrompt).toBe('')
+  })
+
+  it('cuts long server instructions in the system prompt', async () => {
+    invokeMocks.listMcpInstructions.mockResolvedValueOnce([{ serverName: 'verbose', instructions: 'x'.repeat(5_000) }])
+    const toolsetPrompts = useLlmToolsetPromptsStore()
+    const store = useTamagotchiMcpToolsStore()
+
+    await store.refresh()
+
+    expect(toolsetPrompts.activeToolsetPrompt).toContain(`${'x'.repeat(4_000)}\n[The server instructions are longer. The rest is not shown.]`)
+    expect(toolsetPrompts.activeToolsetPrompt).not.toContain('x'.repeat(4_001))
   })
 })

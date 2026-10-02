@@ -1,0 +1,41 @@
+{
+  "name": "@proj-airi/opencode-mcp",
+  "type": "module",
+  "version": "0.12.0-beta.5",
+  "private": true,
+  "description": "MCP server that gives AIRI and other MCP clients control of an OpenCode server",
+  "author": {
+    "name": "Moeru AI Project AIRI Team",
+    "email": "airi@moeru.ai",
+    "url": "https://github.com/moeru-ai"
+  },
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "bin": "./dist/bin/run.mjs",
+  "files": [
+    "README.md",
+    "dist",
+    "package.json"
+  ],
+  "scripts": {
+    "dev": "tsx ./src/bin/run.ts",
+    "start": "tsx ./src/bin/run.ts",
+    "mcp:inspector": "pnpx @modelcontextprotocol/inspector pnpm -F @proj-airi/opencode-mcp start",
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ./vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "catalog:",
+    "@moeru/std": "catalog:",
+    "@opencode-ai/sdk": "catalog:",
+    "zod": "catalog:"
+  }
+}

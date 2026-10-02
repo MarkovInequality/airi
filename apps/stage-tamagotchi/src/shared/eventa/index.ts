@@ -328,6 +328,20 @@ export const electronMcpReadConfigText = defineInvokeEventa<ElectronMcpStdioConf
 export const electronMcpWriteConfigText = defineInvokeEventa<ElectronMcpStdioConfigText, { text: string }>('eventa:invoke:electron:mcp:write-config-text')
 export const electronMcpTestServer = defineInvokeEventa<ElectronMcpStdioTestResult, ElectronMcpStdioTestPayload>('eventa:invoke:electron:mcp:test-server')
 
+/** Usage instructions that a running MCP server sent in its `initialize` result. */
+export interface ElectronMcpServerInstructions {
+  serverName: string
+  instructions: string
+}
+
+/** Lists the instructions of the running MCP servers that sent any. The renderer adds them to the system prompt. */
+export const electronMcpListInstructions = defineInvokeEventa<ElectronMcpServerInstructions[]>('eventa:invoke:electron:mcp:list-instructions')
+/**
+ * Sent to every window after the main process restarts the MCP servers. The running servers,
+ * and thus their instructions, can be different after a restart.
+ */
+export const electronMcpServersChanged = defineEventa('eventa:event:electron:mcp:servers-changed')
+
 export const widgetsOpenWindow = defineInvokeEventa<void, { id?: string }>('eventa:invoke:electron:windows:widgets:open')
 export const widgetsHideWindow = defineInvokeEventa<void, { id?: string }>('eventa:invoke:electron:windows:widgets:hide')
 export const widgetsAdd = defineInvokeEventa<string | undefined, WidgetsAddPayload>('eventa:invoke:electron:windows:widgets:add')

@@ -1,0 +1,5 @@
+export { connectOpencode } from './opencode'
+export type { ConnectOpencodeOptions, OpencodeConnection } from './opencode'
+export { serveHttp, serveStdio } from './serve'
+export type { ServeHttpOptions } from './serve'
+export { createOpencodeMcpServerFactory } from './server'
