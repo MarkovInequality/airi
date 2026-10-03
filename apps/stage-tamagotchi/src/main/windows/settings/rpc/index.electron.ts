@@ -8,6 +8,7 @@ import type { McpStdioManager } from '../../../services/airi/mcp-servers'
 import type { AutoUpdater } from '../../../services/electron/auto-updater'
 import type { GlobalShortcutService } from '../../../services/electron/global-shortcut'
 import type { DevtoolsWindowManager } from '../../devtools'
+import type { EditorWindowManager } from '../../editor'
 import type { SpotlightWindowManager } from '../../spotlight'
 import type { WidgetsWindowManager } from '../../widgets'
 
@@ -18,6 +19,8 @@ import { ipcMain } from 'electron'
 import {
   electronCenterMainWindow,
   electronOpenDevtoolsWindow,
+  electronOpenEditor,
+  electronOpenMainDevtools,
   electronOpenSettingsDevtools,
   electronSpotlightShortcutGet,
   electronSpotlightShortcutSet,
@@ -36,6 +39,7 @@ export async function setupSettingsWindowInvokes(params: {
   widgetsManager: WidgetsWindowManager
   autoUpdater: AutoUpdater
   devtoolsWindow: DevtoolsWindowManager
+  editorWindow: EditorWindowManager
   getMainWindow?: () => BrowserWindow | undefined
   serverChannel: ServerChannel
   godotStageManager: GodotStageManager
@@ -50,7 +54,9 @@ export async function setupSettingsWindowInvokes(params: {
   // manage events within eventa's context system.
   ipcMain.setMaxListeners(0)
 
-  const { context } = createContext(ipcMain, params.settingsWindow)
+  // `onlySameWindow` hears only this window and disposes with it. Without it, this channel
+  // also runs requests from other windows, and each closed Settings window leaves its handlers.
+  const { context } = createContext(ipcMain, params.settingsWindow, { onlySameWindow: true })
 
   await setupBaseWindowElectronInvokes({ context, window: params.settingsWindow, i18n: params.i18n, serverChannel: params.serverChannel })
 
@@ -74,6 +80,9 @@ export async function setupSettingsWindowInvokes(params: {
     return params.spotlightWindow.updateShortcutAccelerator(payload.accelerator)
   })
 
+  // The Developer settings page opens the devtools of the main window and the editor.
+  defineInvokeHandler(context, electronOpenMainDevtools, () => params.getMainWindow?.()?.webContents.openDevTools({ mode: 'detach' }))
+  defineInvokeHandler(context, electronOpenEditor, () => params.editorWindow.openWindow())
   defineInvokeHandler(context, electronOpenSettingsDevtools, async () => params.settingsWindow.webContents.openDevTools({ mode: 'detach' }))
   defineInvokeHandler(context, electronOpenDevtoolsWindow, async (payload) => {
     await params.devtoolsWindow.openWindow(payload)
