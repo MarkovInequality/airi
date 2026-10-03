@@ -12,7 +12,7 @@ import { responses } from '@xsai-ext/responses'
 import { renderSegmentText } from '../messages/render-context'
 import { projectInput, projectRound } from '../messages/turns'
 import { createGeneration } from './generation'
-import { createContinuationScope, mergeRequestHeaders, replaceProviderConfig, supportsTools } from './request-context'
+import { createContinuationScope, mergeRequestHeaders, removedToolImageNote, replaceProviderConfig, supportsTools } from './request-context'
 import { RequestSwitch } from './request-switch'
 import { toAiriStreamEvent } from './xsai-events'
 
@@ -150,6 +150,31 @@ function readOutput(items: ItemParam[]): ProjectionEntry[] {
   })
 }
 
+/**
+ * Keeps the newest `keep` images in function call outputs and replaces older ones with a note. Without `keep`, every image stays.
+ * The SDK passes each step a copy of its input, so the generated turn keeps every image.
+ */
+function replaceOlderToolImages(items: ItemParam[], keep: number | undefined) {
+  if (keep == null)
+    return
+  let remaining = keep
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]
+    if (item.type !== 'function_call_output' || typeof item.output === 'string' || !item.output.some(part => part.type === 'input_image'))
+      continue
+    const output = [...item.output]
+    for (let part = output.length - 1; part >= 0; part--) {
+      if (output[part].type !== 'input_image')
+        continue
+      if (remaining > 0)
+        remaining -= 1
+      else
+        output[part] = { type: 'input_text', text: removedToolImageNote }
+    }
+    items[index] = { ...item, output }
+  }
+}
+
 function toolChoice(choice: StreamOptions['toolChoice']): NonNullable<ResponsesOptions['toolChoice']> | undefined {
   if (choice == null || typeof choice === 'string')
     return choice
@@ -190,7 +215,8 @@ export function streamResponses(input: {
       const resolveStep = input.options?.resolveStep
       if (!resolveStep) {
         scopes.push(input.scope)
-        return generation.prepareStep({ input: current, stepNumber, hasTools: Boolean(requestOptions.tools?.length) })
+        replaceOlderToolImages(current, input.options?.maxToolImages)
+        return { ...generation.prepareStep({ input: current, stepNumber, hasTools: Boolean(requestOptions.tools?.length) }), input: current }
       }
       return (async () => {
         const firstStep = scopes.length === 0 && input.initialStep
@@ -224,6 +250,8 @@ export function streamResponses(input: {
             : undefined,
           toolChoice: undefined,
         })
+        // A protocol change above stores `current` as the partial turn, so trim images only after it.
+        replaceOlderToolImages(current, input.options?.maxToolImages)
         const { toolChoice: lastStepToolChoice } = generation.prepareStep({ input: current, model: next.model, stepNumber, hasTools: Boolean(requestOptions.tools?.length) })
         scopes.push(nextScope)
         const systemIndex = current.findIndex(item => item.type === 'message' && item.role === 'system')

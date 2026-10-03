@@ -70,7 +70,11 @@ describe('consciousness settings synchronization', () => {
     expect(localStorage.getItem('settings/consciousness/top-p-enabled')).toBeNull()
   })
 
-  it('applies a remote step budget snapshot without publishing it again', async () => {
+  it.each([
+    { field: 'maxSteps', value: 50 },
+    { field: 'imageInput', value: 'supported' },
+    { field: 'maxToolImages', value: 5 },
+  ] as const)('applies a remote $field snapshot without publishing it again', async ({ field, value }) => {
     const namespace = `consciousness-settings:${crypto.randomUUID()}`
     const leaderContext = createSyncedContext(namespace, 'leader-only')
     await vi.waitFor(() => expect(leaderContext.runtime.isLeader()).toBe(true))
@@ -90,14 +94,15 @@ describe('consciousness settings synchronization', () => {
     followerStore.$subscribe(() => followerMutations++, { flush: 'sync' })
     followerStore.$onAction(() => followerActions++)
 
-    leaderStore.maxSteps = 50
-    await vi.waitFor(() => expect(followerStore.maxSteps).toBe(50))
+    // Each case assigns one field, so the value type matches that field.
+    Object.assign(leaderStore, { [field]: value })
+    await vi.waitFor(() => expect(followerStore[field]).toBe(value))
     await new Promise(resolve => setTimeout(resolve, 50))
 
     expect(leaderMutations).toBe(1)
     expect(followerMutations).toBe(1)
     expect(followerActions).toBe(0)
-    expect(localStorage.getItem('settings/consciousness/max-steps')).toBeNull()
+    expect(localStorage.length).toBe(0)
   })
 
   it('persists a follower update through one leader-owned action', async () => {
@@ -139,6 +144,15 @@ describe('consciousness settings synchronization', () => {
     await vi.waitFor(() => expect(followerStore.maxSteps).toBe(50))
     expect(leaderStore.maxSteps).toBe(50)
     expect(localStorage.getItem('settings/consciousness/max-steps')).toBe('50')
+
+    await followerStore.setImageInput('supported')
+    await followerStore.setMaxToolImages(5)
+    await vi.waitFor(() => expect(followerStore.imageInput).toBe('supported'))
+    await vi.waitFor(() => expect(followerStore.maxToolImages).toBe(5))
+    expect(leaderStore.imageInput).toBe('supported')
+    expect(leaderStore.maxToolImages).toBe(5)
+    expect(localStorage.getItem('settings/consciousness/image-input')).toBe('supported')
+    expect(localStorage.getItem('settings/consciousness/max-tool-images')).toBe('5')
 
     await followerStore.resetState()
     await vi.waitFor(() => expect(followerStore.maxSteps).toBe(defaultMaxSteps))

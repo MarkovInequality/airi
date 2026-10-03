@@ -37,9 +37,10 @@ export const useLLM = defineStore('llm', () => {
       conversation: context,
       options: {
         ...streamOptions,
-        // A budget from the caller wins. Chat, Spark notifications, and vision set none,
-        // so they use the step budget from the consciousness settings.
+        // A value from the caller wins. Chat, Spark notifications, and vision set none,
+        // so they use the step budget and tool image limit from the consciousness settings.
         maxSteps: streamOptions.maxSteps ?? consciousnessSettingsStore.maxSteps,
+        maxToolImages: streamOptions.maxToolImages ?? consciousnessSettingsStore.maxToolImages,
         onStreamEvent: async (event) => {
           if (event.type === 'tool-call')
             toolExecutionStarted = true

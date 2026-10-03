@@ -246,9 +246,9 @@ function chatChunk(chunk: unknown) {
 }
 
 /** Answers with one tool call until a request forbids tools, then answers with text. */
-function callUntilToolsForbidden(requests: Array<{ tool_choice?: string }>, name: string): typeof globalThis.fetch {
+function callUntilToolsForbidden<Body extends { tool_choice?: string }>(requests: Body[], name: string): typeof globalThis.fetch {
   return async (_url, init) => {
-    const body: { tool_choice?: string } = JSON.parse(String(init?.body))
+    const body: Body = JSON.parse(String(init?.body))
     requests.push(body)
     return chatChunk(body.tool_choice === 'none'
       ? { choices: [{ index: 0, delta: { content: 'Stopped here.' }, finish_reason: 'stop' }] }
@@ -305,6 +305,35 @@ it('counts rounds from before a provider change against the step budget', async 
   })
   expect(requests.map(request => request.tool_choice)).toEqual([undefined, 'none'])
   expect(generatedTurn?.rounds).toHaveLength(2)
+})
+
+it('keeps only the newest tool images in each request', async () => {
+  const requests: Array<{ tool_choice?: string, messages: Array<{ role: string, content?: unknown }> }> = []
+  const fetch = callUntilToolsForbidden(requests, 'screenshot')
+  let shots = 0
+  const screenshot = vi.fn(() => {
+    shots += 1
+    return [{ type: 'text' as const, text: `Shot ${shots}` }, { type: 'image_url' as const, image_url: { url: `data:image/png;base64,c2hvdA${shots}` } }]
+  })
+  let generatedTurn: AssistantTurn | undefined
+  await streamFrom({
+    model: 'test',
+    chatProvider: { generation: model => ({ protocol: 'chat-completions', config: { model, baseURL: 'https://example.test/v1/', fetch } }) },
+    conversation: { turns: [{ type: 'user', id: 'user', content: [{ type: 'text', text: 'Look' }, { type: 'image', url: 'data:image/png;base64,dXNlcg==' }] }] },
+    options: {
+      maxSteps: 3,
+      maxToolImages: 1,
+      tools: [{ type: 'function', function: { name: 'screenshot', parameters: { type: 'object', properties: {} } }, execute: screenshot }],
+      onGeneratedTurn: (turn) => { generatedTurn = turn },
+    },
+  })
+  const toolContents = requests[2].messages.filter(message => message.role === 'tool').map(message => message.content)
+  expect(toolContents).toEqual([
+    [{ type: 'text', text: 'Shot 1' }, { type: 'text', text: '[An earlier tool image was removed to save context.]' }],
+    [{ type: 'text', text: 'Shot 2' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,c2hvdA2' } }],
+  ])
+  expect(JSON.stringify(requests[2].messages[0])).toContain('data:image/png;base64,dXNlcg==')
+  expect(JSON.stringify(generatedTurn)).toContain('data:image/png;base64,c2hvdA1')
 })
 
 describe('transient provider failures (Issue #2660)', () => {

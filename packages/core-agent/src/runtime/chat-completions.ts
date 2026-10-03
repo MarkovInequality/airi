@@ -9,9 +9,34 @@ import { streamText } from '@xsai/stream-text'
 
 import { chatContentToString, chatMessagesToProjectionEntries, conversationToChatMessages } from '../messages/chat-completions'
 import { createGeneration } from './generation'
-import { createContinuationScope, mergeRequestHeaders, replaceProviderConfig, supportsContentArray, supportsTools } from './request-context'
+import { createContinuationScope, mergeRequestHeaders, removedToolImageNote, replaceProviderConfig, supportsContentArray, supportsTools } from './request-context'
 import { RequestSwitch } from './request-switch'
 import { toAiriStreamEvent } from './xsai-events'
+
+/**
+ * Keeps the newest `keep` images in tool messages and replaces older ones with a note. Without `keep`, every image stays.
+ * The SDK passes each step a copy of its messages, so the generated turn keeps every image.
+ */
+function replaceOlderToolImages(messages: Message[], keep: number | undefined) {
+  if (keep == null)
+    return
+  let remaining = keep
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (message.role !== 'tool' || typeof message.content === 'string' || !message.content.some(part => part.type === 'image_url'))
+      continue
+    const content = [...message.content]
+    for (let part = content.length - 1; part >= 0; part--) {
+      if (content[part].type !== 'image_url')
+        continue
+      if (remaining > 0)
+        remaining -= 1
+      else
+        content[part] = { type: 'text', text: removedToolImageNote }
+    }
+    messages[index] = { ...message, content }
+  }
+}
 
 /** Projects one context snapshot and returns only the newly generated turn. */
 export function streamChatCompletions(input: {
@@ -42,7 +67,8 @@ export function streamChatCompletions(input: {
       const resolveStep = input.options?.resolveStep
       if (!resolveStep) {
         scopes.push(input.scope)
-        return generation.prepareStep({ input: current, stepNumber, hasTools: Boolean(requestOptions.tools?.length) })
+        replaceOlderToolImages(current, input.options?.maxToolImages)
+        return { ...generation.prepareStep({ input: current, stepNumber, hasTools: Boolean(requestOptions.tools?.length) }), input: current }
       }
       return (async () => {
         const firstStep = scopes.length === 0 && input.initialStep
@@ -73,6 +99,8 @@ export function streamChatCompletions(input: {
           tools: toolsSupported && next.tools?.length ? next.tools : undefined,
           toolChoice: undefined,
         })
+        // A protocol change above stores `current` as the partial turn, so trim images only after it.
+        replaceOlderToolImages(current, input.options?.maxToolImages)
         const { toolChoice: lastStepToolChoice } = generation.prepareStep({ input: current, model: next.model, stepNumber, hasTools: Boolean(requestOptions.tools?.length) })
         const contentArraySupported = supportsContentArray(next.model, nextRequest, input.options)
         scopes.push(nextScope)

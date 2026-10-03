@@ -748,6 +748,16 @@ pages:
             max-steps:
               label: Max steps per reply
               description: In each step, the model can use tools. In the last step, the model must reply with text. Long tasks, such as desktop control, need more steps.
+            image-input:
+              label: Chat model reads images
+              description: Auto uses what the provider reports, and most providers report nothing. Choose Yes if your chat model can read images. It then gets screenshots and attached images directly, without the vision model.
+              options:
+                auto: Auto
+                supported: 'Yes'
+                unsupported: 'No'
+            max-tool-images:
+              label: Recent tool images kept
+              description: Each request keeps the images of only this many recent tool results, such as screenshots. Older images become a short note. Each image uses many tokens.
       title: Consciousness
     description: Thinking, vision, speech synthesis, gaming, etc.
     gaming-factorio:
@@ -902,7 +912,7 @@ pages:
       title: Vision
       tool-images:
         label: Use the vision model for tool images
-        description: The vision model reads the images that tools return, such as screenshots from Use computer, before your chat model replies. The chat model gets them directly when its provider reports image input. A description has no pixel positions.
+        description: The vision model reads the images that tools return, such as screenshots from Use computer, before your chat model replies. The chat model gets them directly when its provider reports image input, or when Chat model reads images is Yes in the Consciousness settings. A description has no pixel positions.
       capture:
         title: Vision capture cadence
         description: Tune how often the vision ticker captures a frame.

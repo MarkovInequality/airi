@@ -2,6 +2,9 @@ import type { GenerationRequest } from '@proj-airi/provider-inference'
 
 import type { StreamOptions } from '../types/llm'
 
+/** Text that replaces a tool image beyond `StreamOptions.maxToolImages` in a request. */
+export const removedToolImageNote = '[An earlier tool image was removed to save context.]'
+
 /** Settings for one model request. */
 export type ResolvedStep = Awaited<ReturnType<NonNullable<StreamOptions['resolveStep']>>>
 

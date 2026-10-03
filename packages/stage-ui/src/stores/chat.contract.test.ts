@@ -780,6 +780,46 @@ describe('chat store contract', () => {
     expect(toolImageReaders).toEqual([undefined])
   })
 
+  it('sends images to the chat model when the image input setting is Yes', async () => {
+    visionMocks.configured = true
+    const settings = useConsciousnessSettingsStore()
+    await settings.setImageInput('supported')
+    const toolImageReaders: Array<LlmStreamOptions['describeToolImage']> = []
+    llmStreamMock.mockImplementation(async (_model: string, _provider: GenerationProvider, context: Conversation, options: LlmStreamOptions) => {
+      toolImageReaders.push(options.describeToolImage)
+      expect(context.turns.some(turn => turn.type === 'user' && turn.content.some(part => part.type === 'image'))).toBe(true)
+      await options.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await useChatStore().send({
+      sessionId: 'session-1',
+      text: 'Read this directly',
+      attachments: [{ type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' }],
+    })
+
+    expect(toolImageReaders).toEqual([undefined])
+    expect(visionMocks.runInference).not.toHaveBeenCalled()
+    await settings.setImageInput('auto')
+  })
+
+  it('lets the vision model read tool images when the image input setting is No', async () => {
+    visionMocks.configured = true
+    consciousnessModels.value = [{ id: 'gpt-test', metadata: { abilities: { vision: true } } }]
+    const settings = useConsciousnessSettingsStore()
+    await settings.setImageInput('unsupported')
+    const toolImageReaders: Array<LlmStreamOptions['describeToolImage']> = []
+    llmStreamMock.mockImplementation(async (_model: string, _provider: GenerationProvider, _context: Conversation, options: LlmStreamOptions) => {
+      toolImageReaders.push(options.describeToolImage)
+      await options.onStreamEvent?.({ type: 'finish' })
+    })
+
+    await useChatStore().send({ sessionId: 'session-1', text: 'Look at my screen' })
+
+    expect(toolImageReaders).toHaveLength(1)
+    expect(toolImageReaders[0]).toBeTypeOf('function')
+    await settings.setImageInput('auto')
+  })
+
   it('sends images directly when the selected chat model supports vision', async () => {
     visionMocks.configured = true
     consciousnessModels.value = [{ id: 'gpt-test', metadata: { abilities: { vision: true } } }]

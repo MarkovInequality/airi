@@ -411,6 +411,36 @@ it('asks for a text answer on the last step of the budget', async () => {
   expect(generatedTurn?.rounds[2].content).toEqual([{ type: 'text', text: 'Stopped here.', citations: [] }])
 })
 
+it('keeps only the newest tool images in each request', async () => {
+  const requests: Array<{ tool_choice?: unknown, input: ItemParam[] }> = []
+  let shots = 0
+  const screenshot = vi.fn(() => {
+    shots += 1
+    return [{ type: 'text' as const, text: `Shot ${shots}` }, { type: 'image_url' as const, image_url: { url: `data:image/png;base64,c2hvdA${shots}` } }]
+  })
+  await streamFrom({
+    model: 'test',
+    chatProvider: provider(async (_url, init) => {
+      const body: { tool_choice?: unknown, input: ItemParam[] } = JSON.parse(String(init?.body))
+      requests.push(body)
+      return sse(completed(body.tool_choice === 'none'
+        ? [{ type: 'message', role: 'assistant', id: 'answer', content: [{ type: 'output_text', text: 'Done.', annotations: [] }] }]
+        : [{ type: 'function_call', id: `fc_${requests.length}`, call_id: `call_${requests.length}`, name: 'screenshot', arguments: '{}' }]))
+    }),
+    conversation: { turns: [] },
+    options: {
+      maxSteps: 3,
+      maxToolImages: 1,
+      tools: [{ type: 'function', function: { name: 'screenshot', parameters: { type: 'object', properties: {} } }, execute: screenshot }],
+    },
+  })
+  const outputs = requests[2].input.flatMap(item => item.type === 'function_call_output' ? [item.output] : [])
+  expect(outputs).toEqual([
+    [{ type: 'input_text', text: 'Shot 1' }, { type: 'input_text', text: '[An earlier tool image was removed to save context.]' }],
+    [{ type: 'input_text', text: 'Shot 2' }, { type: 'input_image', image_url: 'data:image/png;base64,c2hvdA2' }],
+  ])
+})
+
 it('fails instead of storing an unanswered function call when the provider ignores the last-step tool choice', async () => {
   const toolChoices: unknown[] = []
   const execute = vi.fn(() => 'done')

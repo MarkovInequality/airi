@@ -3,7 +3,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { defaultMaxSteps, useConsciousnessSettingsStore } from './consciousness-settings'
+import { defaultMaxSteps, defaultMaxToolImages, useConsciousnessSettingsStore } from './consciousness-settings'
 
 describe('consciousness settings store', () => {
   beforeEach(() => {
@@ -38,10 +38,32 @@ describe('consciousness settings store', () => {
     expect(store.maxSteps).toBe(defaultMaxSteps)
   })
 
+  it('loads persisted image settings', () => {
+    localStorage.setItem('settings/consciousness/image-input', 'supported')
+    localStorage.setItem('settings/consciousness/max-tool-images', '4')
+    const store = useConsciousnessSettingsStore()
+
+    expect(store.imageInput).toBe('supported')
+    expect(store.maxToolImages).toBe(4)
+  })
+
+  it('uses the defaults when persisted image settings are damaged', () => {
+    localStorage.setItem('settings/consciousness/image-input', 'sometimes')
+    localStorage.setItem('settings/consciousness/max-tool-images', '0')
+    const store = useConsciousnessSettingsStore()
+
+    expect(store.imageInput).toBe('auto')
+    expect(store.maxToolImages).toBe(defaultMaxToolImages)
+  })
+
   it('persists changes through store actions', async () => {
     const store = useConsciousnessSettingsStore()
     await store.setReasoning(true)
     await store.setMaxSteps(50)
+    await store.setImageInput('supported')
+    await store.setMaxToolImages(5)
+    expect(localStorage.getItem('settings/consciousness/image-input')).toBe('supported')
+    expect(localStorage.getItem('settings/consciousness/max-tool-images')).toBe('5')
 
     expect(store.reasoning).toBe(true)
     expect(localStorage.getItem('settings/consciousness/reasoning')).toBe('true')
@@ -54,6 +76,8 @@ describe('consciousness settings store', () => {
     expect(localStorage.getItem('settings/consciousness/reasoning')).toBe('false')
     expect(store.maxSteps).toBe(defaultMaxSteps)
     expect(localStorage.getItem('settings/consciousness/max-steps')).toBe(String(defaultMaxSteps))
+    expect(store.imageInput).toBe('auto')
+    expect(store.maxToolImages).toBe(defaultMaxToolImages)
   })
 
   it('ignores storage events because Pinia owns cross-window synchronization', () => {

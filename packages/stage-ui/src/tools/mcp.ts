@@ -1,8 +1,21 @@
-import type { Tool } from '@xsai/shared-chat'
+import type { CommonContentPart, Tool } from '@xsai/shared-chat'
 
 import { errorMessageFromValue } from '@proj-airi/stage-shared'
 import { tool } from '@xsai/tool'
 import { z } from 'zod'
+
+import * as v from 'valibot'
+
+const mcpTextSchema = v.object({
+  type: v.literal('text'),
+  text: v.string(),
+})
+
+const mcpImageSchema = v.object({
+  type: v.literal('image'),
+  data: v.string(),
+  mimeType: v.string(),
+})
 
 /**
  * Describes an MCP tool that can be exposed to the shared LLM runtime.
@@ -79,6 +92,36 @@ export interface McpToolRuntime {
 }
 
 /**
+ * Turns an MCP result that holds images into chat content parts.
+ *
+ * xsAI sends a list of content parts as it is, so each image becomes an `image_url` part next
+ * to the tool text. koboldcpp then places the image at this tool result. xsAI sends any other
+ * result as JSON text, so a result without images stays unchanged. The parts leave out
+ * `structuredContent`, because MCP servers also send it as text content.
+ *
+ * TODO: OpenAI Chat Completions and some other OpenAI-compatible APIs accept only text in tool
+ * messages, so they can reject these image parts. For those APIs, send the images in a user
+ * message after the tool result.
+ */
+function toToolResult(result: McpCallToolResult): McpCallToolResult | CommonContentPart[] {
+  if (!result.content?.some(item => v.is(mcpImageSchema, item)))
+    return result
+
+  const parts = result.content.map((item): CommonContentPart => {
+    if (v.is(mcpTextSchema, item))
+      return { type: 'text', text: item.text }
+    if (v.is(mcpImageSchema, item))
+      return { type: 'image_url', image_url: { url: `data:${item.mimeType};base64,${item.data}` } }
+    // Audio, resources, and resource links stay readable as JSON text.
+    return { type: 'text', text: JSON.stringify(item) }
+  })
+  // Content parts have no error flag, so a text part tells the model that the tool failed.
+  if (result.isError)
+    parts.unshift({ type: 'text', text: 'The MCP tool reported an error.' })
+  return parts
+}
+
+/**
  * Creates MCP proxy tools backed by a runtime-provided transport.
  *
  * Use when:
@@ -112,7 +155,7 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
       execute: async ({ name, arguments: argsJson }) => {
         try {
           const args = argsJson ? JSON.parse(argsJson) : {}
-          return await runtime.callTool({ name, arguments: args })
+          return toToolResult(await runtime.callTool({ name, arguments: args }))
         }
         catch (error) {
           return {

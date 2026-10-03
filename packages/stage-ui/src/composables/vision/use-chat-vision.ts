@@ -1,6 +1,7 @@
 import type { DescribeToolImage } from '../../stores/ai/chat-llm/tool-images'
 
 import { useConsciousnessStore } from '../../stores/modules/consciousness'
+import { useConsciousnessSettingsStore } from '../../stores/modules/consciousness-settings'
 import { useVisionStore } from '../../stores/modules/vision'
 import { useVisionInference } from './use-vision-inference'
 
@@ -16,16 +17,23 @@ import { useVisionInference } from './use-vision-inference'
  */
 export function useChatVision() {
   const consciousnessStore = useConsciousnessStore()
+  const consciousnessSettingsStore = useConsciousnessSettingsStore()
   const visionStore = useVisionStore()
   const { runVisionInference } = useVisionInference()
 
-  /** Whether the catalog of the chat provider declares image input for the model. Most catalogs omit it. */
-  function declaresImageInput(model: string) {
+  /** Whether the chat model gets images itself. */
+  function readsImages(model: string) {
+    // The user setting wins, because most provider catalogs, such as those of custom
+    // endpoints, do not report image input.
+    if (consciousnessSettingsStore.imageInput === 'supported')
+      return true
+    if (consciousnessSettingsStore.imageInput === 'unsupported')
+      return false
     return consciousnessStore.providerModels.find(candidate => candidate.id === model)?.metadata?.abilities?.vision === true
   }
 
   function needsVisionModel(model: string) {
-    return !declaresImageInput(model) && visionStore.configured
+    return !readsImages(model) && visionStore.configured
   }
 
   /** Whether the vision model reads the images that the user attaches. */

@@ -82,6 +82,14 @@ export interface StreamOptions {
    * @default 30
    */
   maxSteps?: number
+  /**
+   * Most tool-result images in one request, counted from the newest. Each request replaces
+   * older tool images with a short text note, so screenshots do not fill the context.
+   * The generated turn keeps every image. Images that the user attached do not count.
+   *
+   * @default no limit
+   */
+  maxToolImages?: number
   tools?: Tool[] | (() => Promise<Tool[] | undefined>)
   /**
    * Per-model runtime cache of whether the provider accepts content-part arrays

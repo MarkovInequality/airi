@@ -1,14 +1,17 @@
 <script setup lang="ts">
+import type { ImageInput } from '@proj-airi/stage-ui/stores/modules/consciousness-settings'
+import type { SelectOptionItem } from '@proj-airi/ui'
+
 import { Alert, ErrorContainer, RadioCardManySelect, RadioCardSimple } from '@proj-airi/stage-ui/components'
 import { useAnalytics } from '@proj-airi/stage-ui/composables'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
-import { defaultMaxSteps, useConsciousnessSettingsStore } from '@proj-airi/stage-ui/stores/modules/consciousness-settings'
+import { defaultMaxSteps, defaultMaxToolImages, useConsciousnessSettingsStore } from '@proj-airi/stage-ui/stores/modules/consciousness-settings'
 import { useProviderConfigStore } from '@proj-airi/stage-ui/stores/providers/config'
 import { useProviderStore } from '@proj-airi/stage-ui/stores/providers/provider'
-import { FieldCheckbox, FieldRange } from '@proj-airi/ui'
+import { FieldCheckbox, FieldRange, FieldSelect } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
 
@@ -19,7 +22,7 @@ const consciousnessStore = useConsciousnessStore()
 const consciousnessSettingsStore = useConsciousnessSettingsStore()
 const { configuredProviders } = storeToRefs(providerStore)
 const { moduleChatProvidersMetadata } = storeToRefs(providersStore)
-const { reasoning, temperatureEnabled, topPEnabled, maxSteps } = storeToRefs(consciousnessSettingsStore)
+const { reasoning, temperatureEnabled, topPEnabled, maxSteps, imageInput, maxToolImages } = storeToRefs(consciousnessSettingsStore)
 const {
   activeProvider,
   activeModel,
@@ -35,6 +38,11 @@ const {
 
 const { t } = useI18n()
 const { trackModelSwitched, trackProviderClick } = useAnalytics()
+const imageInputOptions = computed((): SelectOptionItem<ImageInput>[] => [
+  { label: t('settings.pages.modules.consciousness.sections.section.model-options.image-input.options.auto'), value: 'auto' },
+  { label: t('settings.pages.modules.consciousness.sections.section.model-options.image-input.options.supported'), value: 'supported' },
+  { label: t('settings.pages.modules.consciousness.sections.section.model-options.image-input.options.unsupported'), value: 'unsupported' },
+])
 watch(activeProvider, async (provider) => {
   if (!provider)
     return
@@ -78,6 +86,16 @@ async function updateTopPEnabled(value: boolean) {
 
 async function updateMaxSteps(value: number) {
   await consciousnessSettingsStore.setMaxSteps(value)
+}
+
+async function updateImageInput(value: ImageInput | undefined) {
+  // The select has no empty option, so a missing value means no change.
+  if (value)
+    await consciousnessSettingsStore.setImageInput(value)
+}
+
+async function updateMaxToolImages(value: number) {
+  await consciousnessSettingsStore.setMaxToolImages(value)
 }
 </script>
 
@@ -326,6 +344,24 @@ async function updateMaxSteps(value: number) {
         :step="1"
         :default-value="defaultMaxSteps"
         @update:model-value="updateMaxSteps"
+      />
+      <FieldSelect
+        :model-value="imageInput"
+        :label="t('settings.pages.modules.consciousness.sections.section.model-options.image-input.label')"
+        :description="t('settings.pages.modules.consciousness.sections.section.model-options.image-input.description')"
+        :options="imageInputOptions"
+        @update:model-value="updateImageInput"
+      />
+      <FieldRange
+        as="div"
+        :model-value="maxToolImages"
+        :label="t('settings.pages.modules.consciousness.sections.section.model-options.max-tool-images.label')"
+        :description="t('settings.pages.modules.consciousness.sections.section.model-options.max-tool-images.description')"
+        :min="1"
+        :max="10"
+        :step="1"
+        :default-value="defaultMaxToolImages"
+        @update:model-value="updateMaxToolImages"
       />
     </section>
   </div>

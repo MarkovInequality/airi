@@ -339,8 +339,36 @@ describe('step budget', () => {
 
     const prepareStep = await streamAndCapturePrepareStep()
 
-    expect(prepareStep(2)).toEqual({})
-    expect(prepareStep(3)).toEqual({ toolChoice: 'none' })
+    expect(prepareStep(2)).not.toHaveProperty('toolChoice')
+    expect(prepareStep(3)).toHaveProperty('toolChoice', 'none')
+  })
+
+  it('keeps only the newest tool images from the consciousness settings', async () => {
+    await useConsciousnessSettingsStore().setMaxToolImages(1)
+    const image = (name: string) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,${name}` } })
+    let prepareStep: PrepareStep | undefined
+    streamTextMock.mockImplementationOnce((streamOptions: { prepareStep: PrepareStep }) => {
+      prepareStep = streamOptions.prepareStep
+      return createMockStreamResult()
+    })
+    await useLLM().stream('model-a', provider, { turns: [] })
+
+    const prepared = prepareStep?.({
+      input: [
+        { role: 'tool', tool_call_id: 'call-1', content: [image('b2xk')] },
+        { role: 'tool', tool_call_id: 'call-2', content: [image('bmV3')] },
+      ],
+      model: 'model-a',
+      stepNumber: 0,
+      steps: [],
+    })
+
+    expect(prepared).toMatchObject({
+      input: [
+        { role: 'tool', tool_call_id: 'call-1', content: [{ type: 'text', text: '[An earlier tool image was removed to save context.]' }] },
+        { role: 'tool', tool_call_id: 'call-2', content: [image('bmV3')] },
+      ],
+    })
   })
 
   it('prefers the step budget from the caller', async () => {
@@ -348,7 +376,7 @@ describe('step budget', () => {
 
     const prepareStep = await streamAndCapturePrepareStep({ maxSteps: 2 })
 
-    expect(prepareStep(0)).toEqual({})
-    expect(prepareStep(1)).toEqual({ toolChoice: 'none' })
+    expect(prepareStep(0)).not.toHaveProperty('toolChoice')
+    expect(prepareStep(1)).toHaveProperty('toolChoice', 'none')
   })
 })
