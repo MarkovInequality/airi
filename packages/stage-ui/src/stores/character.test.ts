@@ -44,6 +44,7 @@ describe('store character', () => {
         if (textPart)
           await options.onLiteral?.(textPart)
       },
+      async flush() {},
       async end() {
         parserEndSpy()
       },

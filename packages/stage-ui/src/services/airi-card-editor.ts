@@ -41,6 +41,37 @@ interface AiriCardEditorModules {
   >
 }
 
+/**
+ * Reads the module fields that the AIRI Card editor owns.
+ *
+ * Empty strings and absent voice tuning mean that the card inherits the
+ * corresponding global setting.
+ */
+export function getAiriCardEditorModuleSettings(
+  card: Card | undefined,
+): Pick<AiriCardEditorModules, 'consciousness' | 'vision' | 'speech' | 'displayModelId'> {
+  const modules = getAiriCardModules(card?.extensions?.airi)
+
+  return {
+    consciousness: {
+      provider: getModuleString(modules?.consciousness, 'provider'),
+      model: getModuleString(modules?.consciousness, 'model'),
+    },
+    vision: {
+      provider: getModuleString(modules?.vision, 'provider'),
+      model: getModuleString(modules?.vision, 'model'),
+    },
+    speech: {
+      provider: getModuleString(modules?.speech, 'provider'),
+      model: getModuleString(modules?.speech, 'model'),
+      voice_id: getModuleString(modules?.speech, 'voice_id'),
+      pitch: getModuleNumber(modules?.speech, 'pitch'),
+      ssml: getModuleBoolean(modules?.speech, 'ssml'),
+    },
+    displayModelId: getModuleString(modules, 'displayModelId'),
+  }
+}
+
 type CardWithAiriExtension = Card & {
   extensions: NonNullable<Card['extensions']> & {
     airi: AiriExtension
@@ -166,6 +197,37 @@ function isAiriExtension(value: unknown): value is AiriExtension {
   return isRecord(value)
     && isRecord(value.modules)
     && isRecord(value.agents)
+}
+
+function getAiriCardModules(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value) || !isRecord(value.modules))
+    return undefined
+
+  return value.modules
+}
+
+function getModuleString(module: unknown, key: string): string {
+  if (!isRecord(module))
+    return ''
+
+  const value = module[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function getModuleNumber(module: unknown, key: string): number | undefined {
+  if (!isRecord(module))
+    return undefined
+
+  const value = module[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function getModuleBoolean(module: unknown, key: string): boolean | undefined {
+  if (!isRecord(module))
+    return undefined
+
+  const value = module[key]
+  return typeof value === 'boolean' ? value : undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -108,7 +108,9 @@ const displayedSpeechSource = computed({
     return activeSpeechProvider.value
   },
   set: (value: string) => {
-    selectSpeechSource(value)
+    void selectSpeechSource(value).catch((error) => {
+      errorMessage.value = errorMessageFrom(error) ?? 'An unknown error occurred'
+    })
   },
 })
 
@@ -146,7 +148,9 @@ const displayedSpeechModel = computed({
     ? streamingModelOptionId(activeSpeechModel.value)
     : activeSpeechModel.value,
   set: (value: string) => {
-    selectSpeechModel(value)
+    void selectSpeechModel(value).catch((error) => {
+      errorMessage.value = errorMessageFrom(error) ?? 'An unknown error occurred'
+    })
   },
 })
 
@@ -264,21 +268,10 @@ function withManualPreviewAnalytics<TProviderConfig extends Record<string, unkno
 }
 
 /**
- * Tracks the active TTS provider while preserving the legacy provider-card event.
- */
-function selectSpeechProvider(providerId: string) {
-  trackProviderClick(providerId, 'speech')
-  trackTtsProviderSelected({
-    tts_provider_id: providerId,
-    tts_model_id: currentTtsModelId(),
-    source: 'settings',
-  })
-}
-
-/**
  * Tracks explicit voice selection from catalog or custom input controls.
  */
 async function selectSpeechVoice(voiceId: string | undefined) {
+  await persistSelection()
   if (!voiceId)
     return
 
@@ -290,30 +283,24 @@ async function selectSpeechVoice(voiceId: string | undefined) {
   })
 }
 
-function selectSpeechSource(sourceId: string) {
-  const previousProvider = activeSpeechProvider.value
-  activeSpeechProvider.value = sourceId
-
-  // Models and voices belong to a provider, so picking a different one drops
-  // the previous selection. The reset lives here rather than in the provider
-  // watcher because card activation also writes this ref, with a model and
-  // voice of its own that must survive. The two official routes share one
-  // catalog, so switching between them keeps the selection.
-  const isMergedOfficialSwitch = (
-    previousProvider === OFFICIAL_SPEECH_PROVIDER_ID
-    || previousProvider === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
-  ) && (
-    sourceId === OFFICIAL_SPEECH_PROVIDER_ID
-    || sourceId === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
-  )
-  if (previousProvider !== sourceId && !isMergedOfficialSwitch) {
-    activeSpeechModel.value = ''
-    activeSpeechVoiceId.value = ''
-    activeSpeechVoice.value = undefined
-  }
+/** Persists the selection only after the leader commits its provider and model. */
+async function selectSpeechSource(sourceId: string) {
+  const selection = await speechStore.selectProviderModel(sourceId, '')
+  if (!selection)
+    return
+  const providerId = providerStore.providers[sourceId]?.definitionId || sourceId
+  // Use this command's receipt: another selection can reach the store before
+  // this caller resumes, but must not relabel this analytics event.
+  trackTtsProviderSelected({
+    tts_provider_id: providerId,
+    tts_model_id: selection.model || 'unknown',
+    source: 'settings',
+  })
+  await persistSelection()
 }
 
-function selectSpeechModel(modelOptionId: string) {
+/** Resolves the displayed model option before committing it in the leader. */
+async function selectSpeechModel(modelOptionId: string) {
   const streamingModelId = modelIdFromStreamingOptionId(modelOptionId)
   const nextProvider = streamingModelId == null
     ? activeSpeechProvider.value === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
@@ -322,13 +309,8 @@ function selectSpeechModel(modelOptionId: string) {
     : OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
   const nextModel = streamingModelId ?? modelOptionId
 
-  if (activeSpeechProvider.value !== nextProvider || activeSpeechModel.value !== nextModel) {
-    activeSpeechProvider.value = nextProvider
-    activeSpeechVoiceId.value = ''
-    activeSpeechVoice.value = undefined
-  }
-
-  activeSpeechModel.value = nextModel
+  await speechStore.selectProviderModel(nextProvider, nextModel)
+  await persistSelection()
 }
 
 /**
@@ -350,57 +332,76 @@ function trackOfficialTtsExposure(providerId = activeSpeechProvider.value, model
   })
 }
 
-// Sync OpenAI Compatible model and voice from provider config
-function syncOpenAICompatibleSettings() {
+/** Applies provider defaults in the leader without a follower state proposal. */
+async function syncOpenAICompatibleSettings() {
   if (activeSpeechProvider.value !== 'openai-compatible-audio-speech')
     return
 
   const providerConfig = providerStore.getProviderConfig(activeSpeechProvider.value)
-
-  // The provider config seeds an empty selection, it does not replace one. The
-  // active card owns the runtime selection, and this runs on mount as well as
-  // after a provider switch, which has already cleared both fields.
-  if (!activeSpeechModel.value)
-    activeSpeechModel.value = (providerConfig?.model as string) || 'tts-1'
-
-  // updateCustomVoiceName also publishes the voice object this provider has no
-  // catalog entry for.
-  if (!activeSpeechVoiceId.value)
-    updateCustomVoiceName((providerConfig?.voice as string) || 'alloy')
+  // Empty provider fields select the same OpenAI defaults as the provider form.
+  await speechStore.selectProviderModel(
+    activeSpeechProvider.value,
+    providerConfig?.model as string || 'tts-1',
+    providerConfig?.voice as string || 'alloy',
+  )
 }
 
 onMounted(async () => {
-  await providersStore.loadModelsForConfiguredProviders()
-  speechStore.ensureActiveSpeechModel()
-  await speechStore.loadVoicesForProvider(activeSpeechProvider.value, activeSpeechModel.value || undefined)
-  syncOpenAICompatibleSettings()
-  trackOfficialTtsExposure()
+  try {
+    await providersStore.loadModelsForConfiguredProviders()
+    await speechStore.loadVoicesForProvider(activeSpeechProvider.value, activeSpeechModel.value || undefined)
+    await syncOpenAICompatibleSettings()
+    trackOfficialTtsExposure()
+  }
+  catch (error) {
+    // Closing a renderer rejects pending RPCs even after its page unmounts.
+    errorMessage.value = errorMessageFrom(error) ?? 'An unknown error occurred'
+  }
 })
 
 watch(activeSpeechProvider, async (newProvider) => {
-  await providersStore.loadModelsForConfiguredProviders()
+  try {
+    await providersStore.loadModelsForConfiguredProviders()
+    if (newProvider !== activeSpeechProvider.value)
+      return
 
-  // Re-seed the streaming default model so its voices load model-scoped (the
-  // server only returns recommended voices for an explicit ?model=). No-op for
-  // other providers / when a model is selected.
-  speechStore.ensureActiveSpeechModel()
-  await speechStore.loadVoicesForProvider(newProvider, activeSpeechModel.value || undefined)
-  trackOfficialTtsExposure(newProvider, currentTtsModelId())
+    // Model discovery can finish after the selection commit. The leader loader
+    // resolves defaults from that catalog before it requests matching voices.
+    await speechStore.loadVoicesForProvider(newProvider, activeSpeechModel.value || undefined)
+    if (newProvider !== activeSpeechProvider.value)
+      return
+    trackOfficialTtsExposure(newProvider, currentTtsModelId())
 
-  syncOpenAICompatibleSettings()
+    await syncOpenAICompatibleSettings()
+  }
+  catch (error) {
+    // An obsolete provider request must not replace the current form error.
+    if (newProvider === activeSpeechProvider.value)
+      errorMessage.value = errorMessageFrom(error) ?? 'An unknown error occurred'
+  }
 })
 
-watch(activeSpeechModel, async (model) => {
+watch(activeSpeechModel, () => {
   if (!activeSpeechProvider.value)
     return
 
-  await speechStore.loadVoicesForProvider(activeSpeechProvider.value, model || undefined)
   trackOfficialTtsExposure(activeSpeechProvider.value, currentTtsModelId())
 })
 
-watch([activeSpeechProvider, activeSpeechModel, activeSpeechVoiceId, pitch, ssmlEnabled], ([provider, model, voiceId, voicePitch, voiceSsml]) => {
-  void airiCardStore.updateActiveCardSpeech({ provider, model, voice_id: voiceId, pitch: voicePitch, ssml: voiceSsml })
-})
+async function persistSelection() {
+  await airiCardStore.updateActiveCardSpeech({
+    provider: activeSpeechProvider.value,
+    model: activeSpeechModel.value,
+    voice_id: activeSpeechVoiceId.value,
+  })
+}
+
+/** Saves a voice tuning edit on the active card. Card activation also writes these refs, so only user edits call this. */
+function persistVoiceTuning(tuning: { pitch?: number, ssml?: boolean }) {
+  void airiCardStore.updateActiveCardSpeech(tuning).catch((error) => {
+    errorMessage.value = errorMessageFrom(error) ?? 'An unknown error occurred'
+  })
+}
 
 // Function to generate speech
 async function generateTestSpeech() {
@@ -581,27 +582,30 @@ function commitCustomVoiceSelection() {
   selectSpeechVoice(activeSpeechVoiceId.value)
 }
 
-function updateCustomModelName(value: string | undefined) {
-  activeSpeechModel.value = value || ''
+/** Routes manual model edits through the same leader commit as listed models. */
+async function updateCustomModelName(value: string | undefined) {
+  errorMessage.value = ''
+  try {
+    await speechStore.selectProviderModel(activeSpeechProvider.value, value || '')
+    await persistSelection()
+  }
+  catch (error) {
+    errorMessage.value = errorMessageFrom(error) ?? 'An unknown error occurred'
+  }
 }
 
-function handleDeleteProvider(providerId: string) {
+async function handleDeleteProvider(providerId: string) {
   if (providerId === 'speech-noop') {
     return
   }
 
-  if (activeSpeechProvider.value === providerId) {
-    activeSpeechProvider.value = 'speech-noop'
-    activeSpeechModel.value = ''
-    activeSpeechVoiceId.value = ''
-    activeSpeechVoice.value = undefined
-  }
-
-  providersStore.deleteProvider(providerId)
+  await airiCardStore.clearProviderSelections(providerId)
+  await providersStore.deleteProvider(providerId)
 }
 </script>
 
 <template>
+  <ErrorContainer v-if="errorMessage" :error="errorMessage" />
   <div flex="~ col md:row gap-6">
     <div bg="neutral-100 dark:[rgba(0,0,0,0.3)]" rounded-xl p-4 flex="~ col gap-4" class="h-fit w-full md:w-[40%]">
       <div flex="~ col gap-4">
@@ -627,7 +631,7 @@ function handleDeleteProvider(providerId: string) {
               :value="source.id"
               :title="source.title"
               :description="source.description"
-              @click="selectSpeechProvider(source.providerId || source.id)"
+              @click="trackProviderClick(source.providerId || source.id, 'speech')"
             >
               <template #topRight>
                 <button
@@ -861,12 +865,14 @@ function handleDeleteProvider(providerId: string) {
               description="Tune the pitch of the voice"
               :min="-100" :max="100" :step="1"
               :format-value="value => `${value}%`"
+              @update:model-value="value => persistVoiceTuning({ pitch: value })"
             />
             <!-- SSML Support -->
             <FieldCheckbox
               v-model="ssmlEnabled"
               label="Enable SSML"
               description="Enable Speech Synthesis Markup Language for more control over speech output"
+              @update:model-value="value => persistVoiceTuning({ ssml: value })"
             />
           </div>
 
@@ -891,8 +897,12 @@ function handleDeleteProvider(providerId: string) {
                 Model
               </label>
               <select
-                v-model="activeSpeechModel"
-                class="w-full border border-neutral-300 rounded bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+                v-model="displayedSpeechModel"
+                :class="[
+                  'w-full px-3 py-2',
+                  'border border-neutral-300 rounded dark:border-neutral-700',
+                  'bg-white dark:bg-neutral-900',
+                ]"
               >
                 <option value="eleven_monolingual_v1">
                   Monolingual v1
