@@ -5,6 +5,7 @@ import type { TextSegment, TextToken } from '../types'
 import { readGraphemeClusters } from 'clustr'
 
 import { createPushStream } from '../stream'
+import { createCodeBlockTextFilter } from './code-block-text'
 import { stripUnspokenText } from './unspoken-text'
 
 export const TTS_FLUSH_INSTRUCTION = '\u200B'
@@ -62,6 +63,11 @@ export interface TtsInputChunkOptions {
    * @default false
    */
   unwrapPronunciation?: boolean
+  /**
+   * Replaces each fenced code block with this text before TTS. The chat renders the
+   * code, but a voice reads the source aloud. Inline code stays. Unset keeps code blocks.
+   */
+  codeBlockReplacement?: string
 }
 
 export interface TtsChunkItem {
@@ -552,6 +558,9 @@ export function createTtsSegmentStream(
   const { stream, write, close, error } = createPushStream<TextSegment>()
   const pendingSpecials: string[] = []
   const encoder = new TextEncoder()
+  const codeBlockFilter = options?.codeBlockReplacement === undefined
+    ? undefined
+    : createCodeBlockTextFilter(options.codeBlockReplacement)
 
   const { stream: byteStream, write: writeBytes, close: closeBytes, error: errorBytes } = createPushStream<Uint8Array>()
 
@@ -567,9 +576,11 @@ export function createTtsSegmentStream(
           continue
 
         if (value.type === 'literal') {
-          if (value.value) {
+          // Code goes first, so a `*` or `<` inside code cannot open a narration span.
+          const literal = codeBlockFilter ? codeBlockFilter.push(value.value ?? '') : value.value
+          if (literal) {
             if (!rewritesSpans(options)) {
-              writeBytes(encoder.encode(value.value))
+              writeBytes(encoder.encode(literal))
               continue
             }
 
@@ -577,7 +588,7 @@ export function createTtsSegmentStream(
             // several of them. Withhold text while a marker is open and release
             // it once the closer lands — or once the held text passes the hold
             // limit, which covers a model that never closes what it opened.
-            pendingText += value.value
+            pendingText += literal
 
             const scan = scanNarrative(pendingText, options)
             if (scan.hasUnclosed && pendingText.length <= scan.holdLimit)
@@ -603,6 +614,7 @@ export function createTtsSegmentStream(
           }
         }
       }
+      pendingText += codeBlockFilter?.flush() ?? ''
       if (pendingText)
         writeBytes(encoder.encode(processNarrative(pendingText, options)))
       closeBytes()

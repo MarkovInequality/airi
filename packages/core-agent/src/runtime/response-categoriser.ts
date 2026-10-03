@@ -42,42 +42,185 @@ interface ExtractedTag {
   endIndex: number
 }
 
+/** A line that opens a fenced code block: three or more backticks and an info string without backticks. */
+const CODE_FENCE_OPEN = /^[ \t]*(`{3,})[^`]*$/
+/** A line that closes a fenced code block: only backticks and blanks. */
+const CODE_FENCE_CLOSE = /^[ \t]*(`{3,})[ \t]*$/
+/** A blank line ends a paragraph, so an inline code span cannot continue past it. */
+const PARAGRAPH_BREAK = /\n[ \t]*\n/g
+
+function blankOut(text: string): string {
+  return text.replace(/[^\n]/g, ' ')
+}
+
+/**
+ * Finds the start of the next backtick run of exactly `length` characters in `text[from, to)`.
+ * Returns -1 when no such run exists.
+ */
+function findBacktickRun(text: string, from: number, to: number, length: number): number {
+  let index = from
+  while (index < to) {
+    const runStart = text.indexOf('`', index)
+    if (runStart === -1 || runStart >= to)
+      return -1
+
+    let runEnd = runStart
+    while (runEnd < to && text[runEnd] === '`')
+      runEnd++
+
+    if (runEnd - runStart === length)
+      return runStart
+
+    index = runEnd
+  }
+
+  return -1
+}
+
+/**
+ * Blanks out inline code spans in text that holds no fenced code block.
+ *
+ * `isStreamTail` marks text that ends at the end of the stream so far. In that text, a span
+ * without a closing run is blanked to the end, because its closing run can still arrive.
+ */
+function blankOutInlineCode(text: string, isStreamTail: boolean): string {
+  let result = ''
+  let index = 0
+
+  while (index < text.length) {
+    const openStart = text.indexOf('`', index)
+    if (openStart === -1) {
+      result += text.slice(index)
+      break
+    }
+
+    let openEnd = openStart
+    while (text[openEnd] === '`')
+      openEnd++
+
+    result += text.slice(index, openStart)
+
+    PARAGRAPH_BREAK.lastIndex = openEnd
+    const paragraphEnd = PARAGRAPH_BREAK.exec(text)?.index ?? text.length
+    const closeStart = findBacktickRun(text, openEnd, paragraphEnd, openEnd - openStart)
+
+    if (closeStart !== -1) {
+      const spanEnd = closeStart + openEnd - openStart
+      result += blankOut(text.slice(openStart, spanEnd))
+      index = spanEnd
+      continue
+    }
+
+    if (isStreamTail && paragraphEnd === text.length) {
+      result += blankOut(text.slice(openStart))
+      break
+    }
+
+    result += text.slice(openStart, openEnd)
+    index = openEnd
+  }
+
+  return result
+}
+
+/**
+ * Replaces Markdown code with spaces, so that tag detection ignores it.
+ *
+ * Use when:
+ * - Searching a model response for reasoning tags such as `<think>`.
+ *
+ * Expects:
+ * - `text` is the response so far. A fenced block or inline span without its closing run
+ *   is blanked to the end, because the rest of the stream can close it.
+ *
+ * Returns:
+ * - A string of the same length and the same line breaks, so offsets and line positions
+ *   still match `text`. Code such as `useLocalStorage<T>()` cannot open a tag.
+ */
+function blankOutMarkdownCode(text: string): string {
+  if (!text.includes('`'))
+    return text
+
+  const lines = text.split('\n')
+  let result = ''
+  let prose = ''
+  let fenceLength = 0
+
+  lines.forEach((line, lineIndex) => {
+    const lineWithBreak = lineIndex < lines.length - 1 ? `${line}\n` : line
+
+    if (fenceLength > 0) {
+      result += blankOut(lineWithBreak)
+      const closeFence = CODE_FENCE_CLOSE.exec(line)?.[1]
+      if (closeFence && closeFence.length >= fenceLength)
+        fenceLength = 0
+
+      return
+    }
+
+    const openFence = CODE_FENCE_OPEN.exec(line)?.[1]
+    if (openFence) {
+      result += blankOutInlineCode(prose, false)
+      prose = ''
+      fenceLength = openFence.length
+      result += blankOut(lineWithBreak)
+      return
+    }
+
+    prose += lineWithBreak
+  })
+
+  return result + blankOutInlineCode(prose, true)
+}
+
+/**
+ * Extracts the text of the first element in `source`, which holds one complete tag.
+ */
+function extractTextFromSource(source: string): string {
+  const tree = unified().use(rehypeParse, { fragment: true }).parse(source) as Root
+  const element = tree.children.find((child): child is Element => child.type === 'element')
+
+  return element ? extractTextContent(element) : ''
+}
+
 /**
  * Extracts all XML-like tags from a response using rehype pipeline
  * Works with any tag format: <tag>content</tag>
  * Only extracts tags that are actually complete (have closing tags in source)
+ * Ignores tags inside Markdown code
  */
 function extractAllTags(response: string): ExtractedTag[] {
   const tags: ExtractedTag[] = []
 
   try {
-    const tree = unified().use(rehypeParse, { fragment: true }).parse(response) as Root
+    const maskedResponse = blankOutMarkdownCode(response)
+    const tree = unified().use(rehypeParse, { fragment: true }).parse(maskedResponse) as Root
 
     visit(tree, 'element', (node: Element) => {
       const position = node.position
       if (!position?.start || !position?.end)
         return
 
-      const startIndex = getOffsetFromPosition(response, position.start)
-      const endIndex = getOffsetFromPosition(response, position.end)
+      const startIndex = getOffsetFromPosition(maskedResponse, position.start)
+      const endIndex = getOffsetFromPosition(maskedResponse, position.end)
 
       if (startIndex === -1 || endIndex === -1)
         return
 
-      // Extract the actual tag content from source
-      const fullMatch = response.slice(startIndex, endIndex)
-
       // Only include tags that have a closing tag in the source (not auto-closed by rehype)
       // Check if the source actually contains the closing tag
       const expectedClosingTag = `</${node.tagName}>`
-      if (!fullMatch.includes(expectedClosingTag)) {
+      if (!maskedResponse.slice(startIndex, endIndex).includes(expectedClosingTag)) {
         // This tag was auto-closed by rehype, so it's incomplete - skip it
         return
       }
 
+      // Extract the actual tag content from source. The masked tree has blanks where code was.
+      const fullMatch = response.slice(startIndex, endIndex)
+
       tags.push({
         tagName: node.tagName,
-        content: extractTextContent(node),
+        content: extractTextFromSource(fullMatch),
         fullMatch,
         startIndex,
         endIndex,
@@ -216,6 +359,8 @@ export function createStreamingCategorizer(
   onSegment?: (segment: CategorizedSegment) => void,
 ) {
   let buffer = ''
+  // `buffer` with Markdown code blanked out. Tag detection reads this copy.
+  let maskedBuffer = ''
   let categorized: CategorizedResponse | null = null
   let lastEmittedSegmentIndex = -1
   let lastParsedLength = 0
@@ -225,14 +370,14 @@ export function createStreamingCategorizer(
   let tagState: TagState = 'outside'
   let tagStackDepth = 0
 
-  // Fallback for filterToSpeech - uses rehype for robust incomplete tag detection
+  // Fallback for filterToSpeech. Uses rehype to find a tag that is not closed yet.
   function checkIncompleteTag(): boolean {
     try {
-      const tree = unified().use(rehypeParse, { fragment: true }).parse(buffer) as Root
+      const tree = unified().use(rehypeParse, { fragment: true }).parse(maskedBuffer) as Root
       const stringified = unified().use(rehypeStringify).stringify(tree).toString()
 
-      if (stringified !== buffer) {
-        const bufferEnd = buffer.trim().slice(-30)
+      if (stringified !== maskedBuffer) {
+        const bufferEnd = maskedBuffer.trim().slice(-30)
         const stringifiedEnd = stringified.trim().slice(-30)
         return bufferEnd !== stringifiedEnd
       }
@@ -309,9 +454,11 @@ export function createStreamingCategorizer(
 
   return {
     consume(chunk: string) {
-      // Process before adding to buffer to detect tag closure in this chunk
-      const tagJustClosed = processChunkIncrementally(chunk)
       buffer += chunk
+      const previousMaskedLength = maskedBuffer.length
+      maskedBuffer = blankOutMarkdownCode(buffer)
+      // Reads the masked chunk, so a `<` in code does not change the tag state
+      const tagJustClosed = processChunkIncrementally(maskedBuffer.slice(previousMaskedLength))
 
       // Re-categorize on first chunk, tag closure, or every 1KB (periodic fallback)
       const shouldRecategorize = !categorized
@@ -368,7 +515,7 @@ export function createStreamingCategorizer(
       // Check if we're currently inside an incomplete tag
       if (checkIncompleteTag()) {
         // Try to find where the tag closes in the combined buffer + text
-        const fullText = buffer + text
+        const fullText = blankOutMarkdownCode(buffer + text)
         try {
           const tree = unified().use(rehypeParse, { fragment: true }).parse(fullText) as Root
           let closingOffset = -1

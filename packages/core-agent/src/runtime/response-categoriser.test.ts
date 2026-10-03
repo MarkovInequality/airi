@@ -349,3 +349,80 @@ describe('createStreamingCategorizer', () => {
     expect(result.speech).toBe('Hello world!')
   })
 })
+
+describe('createStreamingCategorizer with Markdown code', () => {
+  // Mirrors the chat orchestrator: every literal goes through `consume`, then `filterToSpeech`.
+  function streamToSpeech(chunks: string[]) {
+    const categorizer = createStreamingCategorizer()
+    let position = 0
+    let speech = ''
+    for (const chunk of chunks) {
+      categorizer.consume(chunk)
+      speech += categorizer.filterToSpeech(chunk, position)
+      position += chunk.length
+    }
+
+    return { speech, result: categorizer.end() }
+  }
+
+  function chunksOf(text: string, size: number) {
+    const chunks: string[] = []
+    for (let index = 0; index < text.length; index += size)
+      chunks.push(text.slice(index, index + size))
+
+    return chunks
+  }
+
+  it('keeps a fenced code block with generics in the speech', () => {
+    const text = [
+      'Here it is:',
+      '',
+      '```ts',
+      'export function useLocalStorageManualReset<T>(key, initialValue, options?) {',
+      '  const localStorageState = useLocalStorage<T>(key, value, options)',
+      '  const state = refManualReset<T>(localStorageState)',
+      '  return state',
+      '}',
+      '```',
+      '',
+      'It syncs both ways.',
+    ].join('\n')
+
+    for (const size of [1, 5, 32]) {
+      const { speech, result } = streamToSpeech(chunksOf(text, size))
+
+      expect(speech).toBe(text)
+      expect(result.segments).toEqual([])
+      expect(result.speech).toBe(text)
+    }
+  })
+
+  it('keeps inline code with generics in the speech', () => {
+    const text = 'Call `useLocalStorage<T>` with a key, then read `state.value`.'
+
+    const { speech, result } = streamToSpeech(chunksOf(text, 3))
+
+    expect(speech).toBe(text)
+    expect(result.segments).toEqual([])
+  })
+
+  it('does not treat an HTML tag inside a code block as reasoning', () => {
+    const text = 'Use this:\n```html\n<div>hello</div>\n```\nDone.'
+
+    const { speech, result } = streamToSpeech(chunksOf(text, 4))
+
+    expect(speech).toBe(text)
+    expect(result.segments).toEqual([])
+    expect(result.reasoning).toBe('')
+  })
+
+  it('still filters a reasoning tag next to a code block', () => {
+    const text = '<think>check `a<T>` first</think>Here:\n```ts\nconst a = b<T>()\n```\nDone.'
+
+    const { speech, result } = streamToSpeech(chunksOf(text, 4))
+
+    expect(speech).toBe('Here:\n```ts\nconst a = b<T>()\n```\nDone.')
+    expect(result.segments).toHaveLength(1)
+    expect(result.reasoning).toBe('check `a` first')
+  })
+})

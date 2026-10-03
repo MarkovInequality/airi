@@ -593,14 +593,11 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
     }
   },
   playback: playbackManager,
-  // Models narrate their own stage directions — `*smiles softly*`, `(sighs)`,
-  // `<laughs>` — which belong in the chat transcript but read as literal
-  // punctuation when a voice speaks them. `$$...$$` math is the same: the chat
-  // renders it, but the voice would read raw LaTeX. A `%%...%%` hint after the
-  // math is the reverse: the chat hides it and the voice reads its text.
-  // Stripping happens on the way to TTS only, so message history keeps the
-  // original text.
-  segmenterOptions: { stripNarrative: true, stripMath: true, unwrapPronunciation: true },
+  // The chat shows these, but a voice must not read them: stage directions such
+  // as `*smiles*`, `$$...$$` math, and code blocks, which are spoken as "this
+  // code block". A `%%...%%` hint is the reverse: the voice reads its text.
+  // These options change only the TTS input. Message history keeps the original.
+  segmenterOptions: { stripNarrative: true, stripMath: true, unwrapPronunciation: true, codeBlockReplacement: 'this code block' },
 })
 
 initIOTracer()

@@ -276,6 +276,32 @@ describe('tTS Chunker Logic Cleanup', () => {
         expect(await collect(stream)).toBe('The speed v naught is constant.')
       })
     })
+
+    // The chat renders a code block, but a voice reads its source character by character.
+    describe('code blocks', () => {
+      const codeTokens = [
+        'Here is the hook.\n\n``',
+        '`ts\nexport function useLocal',
+        'StorageManualReset<T>(key) {\n  return state *2\n}\n``',
+        '`\n\nIt syncs both ways.',
+      ]
+
+      it('speaks the replacement text instead of the code', async () => {
+        const stream = createTtsSegmentStream(
+          streamOf(codeTokens),
+          { streamId: 's', intentId: 'i' },
+          { stripNarrative: true, stripMath: true, unwrapPronunciation: true, codeBlockReplacement: 'this code block' },
+        )
+
+        expect(await collect(stream)).toBe('Here is the hook. this code block It syncs both ways.')
+      })
+
+      it('reads the code when no replacement is set', async () => {
+        const stream = createTtsSegmentStream(streamOf(codeTokens), { streamId: 's', intentId: 'i' })
+
+        expect(await collect(stream)).toContain('useLocalStorageManualReset')
+      })
+    })
   })
 
   describe('createTtsSegmentStream unspoken-character stripping', () => {
