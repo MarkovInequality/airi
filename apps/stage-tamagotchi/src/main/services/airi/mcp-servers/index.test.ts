@@ -21,6 +21,7 @@ const shellMock = vi.hoisted(() => ({
 }))
 
 const clientMocks = vi.hoisted(() => ({
+  callTool: vi.fn(),
   close: vi.fn(),
   connect: vi.fn(),
   getInstructions: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('../../../libs/bootkit/lifecycle', () => ({
 
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: class {
+    callTool = clientMocks.callTool
     close = clientMocks.close
     connect = clientMocks.connect
     getInstructions = clientMocks.getInstructions
@@ -100,11 +102,11 @@ describe('createMcpStdioManager', () => {
     expect(result.error).toContain('Missing required environment variable: API_KEY')
   })
 
-  describe('server instructions', () => {
+  describe('running servers', () => {
     let userDataDir: string
 
     beforeEach(async () => {
-      userDataDir = await mkdtemp(join(tmpdir(), 'airi-mcp-instructions-'))
+      userDataDir = await mkdtemp(join(tmpdir(), 'airi-mcp-running-servers-'))
       appMock.getPath.mockReturnValue(userDataDir)
       clientMocks.connect.mockResolvedValue(undefined)
     })
@@ -153,6 +155,23 @@ describe('createMcpStdioManager', () => {
       await manager.applyAndRestart()
 
       expect(receivedEvents).toHaveBeenCalledTimes(1)
+    })
+
+    it('restarts the timeout of a tool call on each progress notification, with no total limit', async () => {
+      const { createMcpStdioManager } = await import('./index')
+      const manager = createMcpStdioManager()
+      await writeConfig({ opencode: { command: 'opencode-mcp' } })
+      clientMocks.callTool.mockResolvedValue({ content: [{ type: 'text', text: '{"state":"done"}' }] })
+      await manager.applyAndRestart()
+
+      const result = await manager.callTool({ name: 'opencode::opencode_session_wait', arguments: { sessionID: 'ses_1' } })
+
+      expect(result.content).toEqual([{ type: 'text', text: '{"state":"done"}' }])
+      expect(clientMocks.callTool).toHaveBeenCalledWith(
+        { name: 'opencode_session_wait', arguments: { sessionID: 'ses_1' } },
+        undefined,
+        { timeout: 10_000, resetTimeoutOnProgress: true, onprogress: expect.any(Function) },
+      )
     })
   })
 })

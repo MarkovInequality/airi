@@ -1,12 +1,15 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js'
+
 import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
+import { setTimeout as sleep } from 'node:timers/promises'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { connectOpencode } from './opencode'
 import { createOpencodeMcpServerFactory } from './server'
@@ -99,8 +102,8 @@ async function connectTools(routes: Record<string, Route>) {
   await client.connect(clientTransport)
   cleanups.push(() => client.close())
 
-  async function callTool(name: string, args: Record<string, unknown> = {}) {
-    const result = await client.callTool({ name, arguments: args })
+  async function callTool(name: string, args: Record<string, unknown> = {}, options?: RequestOptions) {
+    const result = await client.callTool({ name, arguments: args }, undefined, options)
     const [content] = result.content as Array<{ type: string, text: string }>
     return {
       isError: result.isError === true,
@@ -166,7 +169,7 @@ describe('opencode MCP server', () => {
       }),
     })
 
-    const result = await callTool('opencode_session_wait', { sessionID: 'ses_1', timeoutSeconds: 0 })
+    const result = await callTool('opencode_session_wait', { sessionID: 'ses_1' })
 
     expect(result.json()).toEqual({
       sessionID: 'ses_1',
@@ -193,7 +196,7 @@ describe('opencode MCP server', () => {
     })
 
     const startedAt = Date.now()
-    const result = await callTool('opencode_session_wait', { sessionID: 'ses_1', timeoutSeconds: 30 })
+    const result = await callTool('opencode_session_wait', { sessionID: 'ses_1' })
 
     expect(Date.now() - startedAt).toBeLessThan(3_000)
     expect(result.json().state).toBe('needs-input')
@@ -202,15 +205,46 @@ describe('opencode MCP server', () => {
     ])
   })
 
-  it('reports a busy session as working when the wait time ends', async () => {
+  it('waits while the agent works, and reports progress after each status check', async () => {
+    let statusChecks = 0
     const { callTool } = await connectTools({
       ...idleSessionRoutes,
-      'GET /session/status': () => ({ body: { ses_1: { type: 'busy' } } }),
+      'GET /session/status': () => {
+        statusChecks += 1
+        return { body: statusChecks <= 2 ? { ses_1: { type: 'busy' } } : {} }
+      },
     })
 
-    const result = await callTool('opencode_session_wait', { sessionID: 'ses_1', timeoutSeconds: 0 })
+    const progress: Array<{ progress: number, message?: string }> = []
+    const result = await callTool('opencode_session_wait', { sessionID: 'ses_1' }, {
+      onprogress: ({ progress: value, message }) => progress.push({ progress: value, message }),
+    })
 
-    expect(result.json().state).toBe('working')
+    expect(result.json().state).toBe('done')
+    expect(progress.map(update => update.progress)).toEqual([1, 2])
+    expect(progress[0]?.message).toMatch(/^OpenCode is working \(\d+ s\)$/)
+  })
+
+  it('stops checking the session when the client cancels the wait', async () => {
+    let statusChecks = 0
+    const { callTool } = await connectTools({
+      ...idleSessionRoutes,
+      'GET /session/status': () => {
+        statusChecks += 1
+        return { body: { ses_1: { type: 'busy' } } }
+      },
+    })
+
+    const controller = new AbortController()
+    const waiting = callTool('opencode_session_wait', { sessionID: 'ses_1' }, { signal: controller.signal })
+    await vi.waitFor(() => expect(statusChecks).toBeGreaterThan(0))
+    controller.abort()
+    await expect(waiting).rejects.toThrow()
+
+    // A check that started before the cancellation arrived can still finish.
+    const checksAtCancel = statusChecks
+    await sleep(2_500)
+    expect(statusChecks).toBeLessThanOrEqual(checksAtCancel + 1)
   })
 
   it('runs a slash command in the background and reports its failure one time', async () => {
@@ -230,18 +264,22 @@ describe('opencode MCP server', () => {
     const started = await callTool('opencode_session_command', { sessionID: 'ses_1', command: 'nope', arguments: 'now' })
     expect(started.json()).toEqual({ sessionID: 'ses_1', state: 'working' })
 
-    // OpenCode reports the session as idle, but the command request is still open.
-    const whileRunning = await callTool('opencode_session_wait', { sessionID: 'ses_1', timeoutSeconds: 0 })
-    expect(whileRunning.json().state).toBe('working')
+    // OpenCode reports the session as idle, but the command request is still open, so the wait goes on.
+    let waitEnded = false
+    const waiting = callTool('opencode_session_wait', { sessionID: 'ses_1' }).finally(() => {
+      waitEnded = true
+    })
+    await sleep(1_500)
+    expect(waitEnded).toBe(false)
 
     failCommand()
-    const afterFailure = await callTool('opencode_session_wait', { sessionID: 'ses_1', timeoutSeconds: 5 })
+    const afterFailure = await waiting
     expect(afterFailure.json().state).toBe('done')
     expect(afterFailure.json().commandError).toBe('OpenCode returned HTTP 400: Command not found: nope')
     // The tool returned before its request reached OpenCode, so the request is checked only now.
     expect(requests.find(request => request.path === '/session/ses_1/command')?.body).toEqual({ command: 'nope', arguments: 'now' })
 
-    const later = await callTool('opencode_session_wait', { sessionID: 'ses_1', timeoutSeconds: 0 })
+    const later = await callTool('opencode_session_wait', { sessionID: 'ses_1' })
     expect(later.json().commandError).toBeUndefined()
   })
 

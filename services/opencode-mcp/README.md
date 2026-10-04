@@ -6,23 +6,22 @@ The server uses the official OpenCode SDK (`@opencode-ai/sdk`). It connects to a
 
 ## What It Does
 
-The server has 22 tools:
+The server has 18 tools:
 
-- 20 typed tools for the usual work: sessions, prompts, permission replies, search, files, and git status. Each tool has a small input schema and returns a short result.
+- 16 typed tools for the usual work: sessions, prompts, permission replies, project info, and git status. Each tool has a small input schema and returns a short result.
 - 2 generic tools that reach every other operation of the OpenCode API (182 of its 188 operations; see [Limits](#limits)). `opencode_api_search` finds an operation and gives its input schema. `opencode_api_call` runs it.
 
-In an MCP client that gives each tool to the model, the tool list costs about 2,700 tokens in each request. One tool for each API operation costs about 47,000 tokens. AIRI gives the model one tool that lists the MCP tools, so the list goes into the chat only when the model calls that tool.
+In an MCP client that gives each tool to the model, the tool list costs about 2,300 tokens in each request. One tool for each API operation costs about 47,000 tokens. AIRI gives the model one tool that lists the MCP tools, so the list goes into the chat only when the model calls that tool.
 
 ### How a Task Runs
 
-An OpenCode agent can work for minutes. Some MCP clients end a tool call after 10 seconds (AIRI ends it after 10 to 15 seconds). Thus no tool waits for the agent to finish:
+An OpenCode agent can work for minutes, but many MCP clients end a tool call after a short timeout. Thus the wait for the agent sends progress notifications:
 
 1. `opencode_session_prompt` sends the task and returns the `sessionID` at once.
-2. `opencode_session_wait` waits up to `timeoutSeconds` (5 by default), then returns a `state`:
+2. `opencode_session_wait` waits until the agent finishes or needs input. It has no time limit. It checks the session once a second, and after each check it sends a progress notification if the client sent a progress token. A client that restarts its timeout on progress waits as long as the agent works. AIRI restarts its 10-second timeout on progress. The client ends the wait when it cancels the call.
+3. The wait returns a `state`:
    - `done`: the agent finished. `reply` holds its answer.
-   - `working`: the agent still works. Call `opencode_session_wait` again.
-   - `needs-input`: the agent waits for you. Reply with `opencode_permission_reply` or `opencode_question_reply`.
-   - `retrying`: a provider request failed, and OpenCode tries again.
+   - `needs-input`: the agent waits for you. Reply with `opencode_permission_reply` or `opencode_question_reply`, then wait again.
 
 `opencode_session_command` runs slash commands (for example `init`) in the same way.
 
@@ -86,17 +85,20 @@ Then connect the client to `http://127.0.0.1:3920/mcp`.
 |---|---|
 | `OPENCODE_SERVER_PASSWORD` | Password of an OpenCode server that requires one. |
 | `OPENCODE_SERVER_USERNAME` | User name for that password. The default is `opencode`. |
+| `OPENCODE_ENABLE_EXA` | Set to `1` to give the OpenCode agent its `websearch` tool. The server passes it to the `opencode serve` that it starts. |
+| `EXA_API_KEY` | Optional key for Exa. Without it, OpenCode uses the free Exa endpoint. |
+
+OpenCode sends web search queries to Exa (`https://mcp.exa.ai/mcp`). The tool descriptions tell the model that OpenCode can search the web, so set `OPENCODE_ENABLE_EXA` when you use this server. With `--url`, set it on the OpenCode server that you started.
 
 ### Tools
 
 | Tool | Description |
 |---|---|
 | `opencode_session_list` | List the sessions of the project. |
-| `opencode_session_create` | Create an empty session. |
 | `opencode_session_delete` | Delete a session. |
 | `opencode_session_prompt` | Send a task to the agent. Returns at once. |
 | `opencode_session_command` | Run a slash command. Returns at once. |
-| `opencode_session_wait` | Wait for a session, then return its state and reply. |
+| `opencode_session_wait` | Wait until the agent finishes or needs input, then return its state and reply. |
 | `opencode_session_messages` | Read the latest messages of a session. |
 | `opencode_session_abort` | Stop the agent of a session. |
 | `opencode_session_diff` | List the files that a session changed. |
@@ -107,9 +109,6 @@ Then connect the client to `http://127.0.0.1:3920/mcp`.
 | `opencode_question_reply` | Answer or reject a question from the agent. |
 | `opencode_project_info` | Show the OpenCode version, the project directory, and the git branch. |
 | `opencode_prompt_options` | List the agents, slash commands, and models. |
-| `opencode_find_text` | Search file text with a regular expression. |
-| `opencode_find_files` | Find files or directories by name. |
-| `opencode_file_read` | Read a text file, in parts if it is long. |
 | `opencode_vcs_status` | Show the git branch and the changed files. |
 | `opencode_api_search` | Find any API operation and its input schema. |
 | `opencode_api_call` | Run any API operation by its `operationId`. |
@@ -124,6 +123,7 @@ The typed tools do not return provider API keys. `opencode_api_call` returns the
 
 ## Limits
 
+- A client that does not restart its timeout on progress ends each `opencode_session_wait` at that timeout, without a reply. Raise its timeout, or use a client that restarts it on progress.
 - Event streams (`event.subscribe`, `global.event`, `v2.event.subscribe`, `v2.session.events`) and terminal connections (`pty.connect`, `v2.pty.connect`) cannot run as a tool call. The terminal operations that do not stream (`pty.create`, `pty.list`, and more) work.
 - Some API operations wait until the agent finishes, for example `session.prompt` and `session.shell`. Through `opencode_api_call`, the MCP client can end the call before they finish. Use `opencode_session_prompt` and `opencode_session_command` for agent work.
 - The server cuts each tool result at 16,000 characters.

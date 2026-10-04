@@ -15,9 +15,10 @@ import { createCommandTracker, registerSessionTools } from './tools/sessions'
  */
 const instructions = [
   'These tools control OpenCode, a coding agent, in one project.',
-  'To give OpenCode a task, call opencode_session_prompt. Then call opencode_session_wait until its state is "done", and read the reply.',
+  'Give OpenCode a task with opencode_session_prompt. This includes questions about how the code in a project works, and searching the web.',
+  'OpenCode reads, searches, and changes files on its own.',
+  'Then call opencode_session_wait until the state is "done", and read the reply.',
   'If the state is "needs-input", reply with opencode_permission_reply or opencode_question_reply, then wait again.',
-  'For an operation that no other tool covers, find it with opencode_api_search and run it with opencode_api_call.',
 ].join(' ')
 
 /**

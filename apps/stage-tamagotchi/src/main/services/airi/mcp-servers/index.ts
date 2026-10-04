@@ -1,3 +1,4 @@
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js'
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
 import type { BrowserWindow } from 'electron'
 
@@ -73,6 +74,17 @@ const defaultMcpConfig: ElectronMcpStdioConfigFile = {
 const toolNameSeparator = '::'
 const mcpRequestTimeoutMsec = 10_000
 const mcpRequestMaxTotalTimeoutMsec = 15_000
+/**
+ * Options of each MCP tool call. A call fails when the server sends no progress notification for
+ * `mcpRequestTimeoutMsec`. Each notification restarts that timeout, with no total limit, so a tool
+ * that reports progress, such as opencode_session_wait, runs until it ends. The SDK asks the server
+ * for progress notifications only when `onprogress` is set.
+ */
+const mcpToolCallOptions: RequestOptions = {
+  timeout: mcpRequestTimeoutMsec,
+  resetTimeoutOnProgress: true,
+  onprogress: () => {},
+}
 const mcpTestStderrMaxChars = 16_000
 
 function stringifyError(error: unknown) {
@@ -321,10 +333,7 @@ export function createMcpStdioManager(): McpStdioManager {
       result = await session.client.callTool({
         name: toolName,
         arguments: payload.arguments ?? {},
-      }, undefined, {
-        timeout: mcpRequestTimeoutMsec,
-        maxTotalTimeout: mcpRequestMaxTotalTimeoutMsec,
-      })
+      }, undefined, mcpToolCallOptions)
     }
     catch (error) {
       const fallbackToolName = resolveFallbackToolName(toolName)
@@ -341,10 +350,7 @@ export function createMcpStdioManager(): McpStdioManager {
       result = await session.client.callTool({
         name: fallbackToolName,
         arguments: payload.arguments ?? {},
-      }, undefined, {
-        timeout: mcpRequestTimeoutMsec,
-        maxTotalTimeout: mcpRequestMaxTotalTimeoutMsec,
-      })
+      }, undefined, mcpToolCallOptions)
     }
 
     const normalized: ElectronMcpCallToolResult = {}

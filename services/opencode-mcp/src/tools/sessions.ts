@@ -1,4 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js'
+import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js'
 import type { AssistantMessage, Message, Part, Session, ToolPart } from '@opencode-ai/sdk/v2/types'
 
 import type { OpencodeConnection } from '../opencode'
@@ -15,16 +17,18 @@ interface MessageWithParts {
 }
 
 /**
- * What a client does next with a session, as reported by `opencode_session_wait`.
+ * What a client does next with a session, as reported by the session tools.
  *
  * - `done`: the agent finished. `reply` holds the complete answer.
- * - `working`: the agent still runs. Call `opencode_session_wait` again.
+ * - `working`: the agent runs. `opencode_session_wait` waits until it finishes.
  * - `needs-input`: the agent waits for a permission reply or an answer to a question.
- * - `retrying`: a provider request failed, and OpenCode tries again later.
  */
-type SessionState = 'done' | 'working' | 'needs-input' | 'retrying'
+type SessionState = 'done' | 'working' | 'needs-input'
 
-/** How often `opencode_session_wait` reads the session status while it waits. */
+/** The context that the MCP SDK gives to each tool call. */
+type ToolCallExtra = RequestHandlerExtra<ServerRequest, ServerNotification>
+
+/** How often `opencode_session_wait` reads the session status, and sends progress, while it waits. */
 const waitPollIntervalMsec = 1_000
 
 /**
@@ -46,7 +50,7 @@ function isHeadersTimeout(error: unknown) {
  * Tracks the `session.command` requests that run in the background.
  *
  * `session.command` returns only when the agent finishes, which can take minutes. Some MCP
- * clients end a tool call after about 10 seconds (AIRI uses 10 to 15 seconds). So
+ * clients end a tool call after about 10 seconds, and AIRI does so when no progress arrives. So
  * `opencode_session_command` starts the request and returns at once. `opencode_session_wait` reads
  * this state: a session with a running command is working, and a failed command reports its error
  * one time, after the session is idle.
@@ -192,11 +196,23 @@ function buildReply(messages: MessageWithParts[]) {
   }
 }
 
-async function waitForSession(connection: OpencodeConnection, commands: CommandTracker, sessionID: string, timeoutMsec: number) {
+/**
+ * Waits until the agent of a session finishes or needs input.
+ *
+ * The wait has no time limit. The client ends it by cancelling the tool call, which aborts
+ * `extra.signal`. After each status check, it sends a progress notification if the client sent a
+ * progress token. A client that restarts its timeout on progress, as AIRI does, then waits as long
+ * as the agent works.
+ */
+async function waitForSession(connection: OpencodeConnection, commands: CommandTracker, sessionID: string, extra: ToolCallExtra) {
   const { client } = connection
-  const deadline = Date.now() + timeoutMsec
+  const progressToken = extra._meta?.progressToken
+  const startedAt = Date.now()
+  let checks = 0
 
   for (;;) {
+    extra.signal.throwIfAborted()
+
     const [statuses, pending] = await Promise.all([
       client.session.status(undefined, strict),
       listPendingRequests(connection, sessionID),
@@ -206,30 +222,33 @@ async function waitForSession(connection: OpencodeConnection, commands: CommandT
     const status = statuses.data[sessionID] ?? { type: 'idle' as const }
     const needsInput = pending.permissions.length > 0 || pending.questions.length > 0
     const isBusy = status.type !== 'idle' || commands.isRunning(sessionID)
-    const remainingMsec = deadline - Date.now()
 
-    if (isBusy && !needsInput && remainingMsec > 0) {
-      await sleep(Math.min(waitPollIntervalMsec, remainingMsec))
+    if (isBusy && !needsInput) {
+      checks += 1
+      if (progressToken !== undefined) {
+        const seconds = Math.round((Date.now() - startedAt) / 1_000)
+        await extra.sendNotification({
+          method: 'notifications/progress',
+          params: {
+            progressToken,
+            progress: checks,
+            message: status.type === 'retry'
+              ? `OpenCode retries after a provider error (${seconds} s): ${status.message}`
+              : `OpenCode is working (${seconds} s)`,
+          },
+        })
+      }
+
+      await sleep(waitPollIntervalMsec)
       continue
     }
 
-    let state: SessionState = 'done'
-    if (needsInput) {
-      state = 'needs-input'
-    }
-    else if (status.type === 'retry') {
-      state = 'retrying'
-    }
-    else if (isBusy) {
-      state = 'working'
-    }
-
+    const state: SessionState = needsInput ? 'needs-input' : 'done'
     const messages = await client.session.messages({ sessionID, limit: replyMessageLimit }, strict)
 
     return {
       sessionID,
       state,
-      retry: status.type === 'retry' ? { attempt: status.attempt, message: status.message } : undefined,
       pending: needsInput ? pending : undefined,
       reply: buildReply(messages.data),
       // A command failure is final only when the session is idle. While the session is busy,
@@ -253,16 +272,6 @@ export function registerSessionTools(server: McpServer, connection: OpencodeConn
     return data.map(summarizeSession)
   }))
 
-  server.registerTool('opencode_session_create', {
-    description: 'Create an empty OpenCode session. opencode_session_prompt can also create one.',
-    inputSchema: {
-      title: z.string().optional(),
-    },
-  }, async ({ title }) => respond(async () => {
-    const { data } = await client.session.create({ title }, strict)
-    return summarizeSession(data)
-  }))
-
   server.registerTool('opencode_session_delete', {
     description: 'Delete an OpenCode session and its messages. This cannot be undone.',
     inputSchema: {
@@ -274,7 +283,7 @@ export function registerSessionTools(server: McpServer, connection: OpencodeConn
   }))
 
   server.registerTool('opencode_session_prompt', {
-    description: 'Send a task or message to the OpenCode agent. Returns at once. Then call opencode_session_wait with the sessionID to get the reply.',
+    description: 'Give a task to the OpenCode agent, or send a follow-up message in a session. Use it for every operation, for example to change code, fix a bug, read files, research how the project works, or search the web. Without a sessionID, it starts a new session and returns its sessionID. To continue the same work, pass that sessionID, so OpenCode keeps the earlier context. Returns at once. Then call opencode_session_wait with the sessionID to get the reply.',
     inputSchema: {
       text: z.string().min(1).describe('The message for the agent.'),
       sessionID: z.string().optional().describe('Session to continue. Omit to start a new session.'),
@@ -318,12 +327,11 @@ export function registerSessionTools(server: McpServer, connection: OpencodeConn
   }))
 
   server.registerTool('opencode_session_wait', {
-    description: 'Wait for a session, then return its state and the reply to the latest message. state "done": the reply is complete. "working": call again. "needs-input": reply with opencode_permission_reply or opencode_question_reply. "retrying": OpenCode retries after a provider error.',
+    description: 'Wait until the agent of a session finishes or needs input, then return the state and the reply to the latest message. state "done": the reply is complete. "needs-input": reply with opencode_permission_reply or opencode_question_reply, then wait again.',
     inputSchema: {
       sessionID: z.string(),
-      timeoutSeconds: z.number().min(0).max(600).optional().describe('Longest time to wait for the agent to finish. Default 5. Some MCP clients end a tool call after 10 seconds.'),
     },
-  }, async ({ sessionID, timeoutSeconds }) => respond(() => waitForSession(connection, commands, sessionID, (timeoutSeconds ?? 5) * 1_000)))
+  }, async ({ sessionID }, extra) => respond(() => waitForSession(connection, commands, sessionID, extra)))
 
   server.registerTool('opencode_session_messages', {
     description: 'Read the latest messages of a session.',

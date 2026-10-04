@@ -44,10 +44,6 @@ describe.runIf(process.env.OPENCODE_MCP_INTEGRATION === 'true')('opencode MCP se
   it('reads the project through the typed tools', async () => {
     const info = await callTool('opencode_project_info')
     expect(info.opencodeVersion).toMatch(/^\d+\.\d+\.\d+/)
-
-    // Paths are relative to the directory of the connection, which is this package.
-    const files = await callTool('opencode_find_files', { query: 'package.json', limit: 5 })
-    expect(files).toContain('package.json')
   })
 
   it('reaches the full API through the spec of the server', async () => {
@@ -58,11 +54,12 @@ describe.runIf(process.env.OPENCODE_MCP_INTEGRATION === 'true')('opencode MCP se
     expect(health.data.healthy).toBe(true)
   })
 
-  it('creates and deletes a session', async () => {
-    const session = await callTool('opencode_session_create', { title: 'opencode-mcp integration test' })
-    expect(session.id).toMatch(/^ses/)
+  it('deletes a session', async () => {
+    // No tool only creates a session, and a prompt needs a model provider, so the API creates it.
+    const created = await callTool('opencode_api_call', { operationId: 'session.create', body: { title: 'opencode-mcp integration test' } })
+    expect(created.data.id).toMatch(/^ses/)
 
-    const deleted = await callTool('opencode_session_delete', { sessionID: session.id })
+    const deleted = await callTool('opencode_session_delete', { sessionID: created.data.id })
     expect(deleted).toEqual({ deleted: true })
   })
 })

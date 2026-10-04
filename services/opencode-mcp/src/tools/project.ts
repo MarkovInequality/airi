@@ -2,8 +2,6 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import type { OpencodeConnection } from '../opencode'
 
-import { z } from 'zod'
-
 import { respond, strict, truncate } from './result'
 
 export function registerProjectTools(server: McpServer, connection: OpencodeConnection) {
@@ -56,58 +54,6 @@ export function registerProjectTools(server: McpServer, connection: OpencodeConn
       defaultModel: config.data.model,
       // Only model IDs: provider entries also hold API keys and endpoint options.
       modelsByProvider: Object.fromEntries(providers.data.providers.map(provider => [provider.id, Object.keys(provider.models)])),
-    }
-  }))
-
-  server.registerTool('opencode_find_text', {
-    description: 'Search the text of the project files with a regular expression (ripgrep syntax).',
-    inputSchema: {
-      pattern: z.string().min(1),
-      limit: z.number().int().min(1).max(200).optional().describe('Most matches to return. Default 50.'),
-    },
-  }, async ({ pattern, limit }) => respond(async () => {
-    const { data } = await client.find.text({ pattern }, strict)
-    const maxMatches = limit ?? 50
-    return {
-      matchCount: data.length,
-      matches: data.slice(0, maxMatches).map(match => `${match.path.text}:${match.line_number}: ${truncate(match.lines.text.trim(), 200)}`),
-    }
-  }))
-
-  server.registerTool('opencode_find_files', {
-    description: 'Find project files or directories by a fuzzy name search.',
-    inputSchema: {
-      query: z.string().min(1),
-      type: z.enum(['file', 'directory']).optional().describe('Default: both.'),
-      limit: z.number().int().min(1).max(200).optional().describe('Default 50.'),
-    },
-  }, async ({ query, type, limit }) => respond(async () => {
-    const { data } = await client.find.files({ query, type, limit: limit ?? 50 }, strict)
-    return data
-  }))
-
-  server.registerTool('opencode_file_read', {
-    description: 'Read a text file of the project. Use startLine and endLine to read a long file in parts.',
-    inputSchema: {
-      path: z.string().min(1).describe('Path relative to the project directory.'),
-      startLine: z.number().int().min(1).optional().describe('First line to return, from 1.'),
-      endLine: z.number().int().min(1).optional().describe('Last line to return.'),
-    },
-  }, async ({ path, startLine, endLine }) => respond(async () => {
-    const { data } = await client.file.read({ path }, strict)
-    if (data.type === 'binary') {
-      return { path, type: 'binary', mimeType: data.mimeType }
-    }
-
-    const lines = data.content.split('\n')
-    const first = startLine ?? 1
-    const last = Math.min(endLine ?? lines.length, lines.length)
-    return {
-      path,
-      totalLines: lines.length,
-      startLine: first,
-      endLine: last,
-      content: lines.slice(first - 1, last).join('\n'),
     }
   }))
 
